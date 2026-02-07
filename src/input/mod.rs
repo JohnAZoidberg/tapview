@@ -1,0 +1,46 @@
+pub mod evdev_backend;
+
+use crate::multitouch::{TouchData, MAX_TOUCH_POINTS};
+use std::path::Path;
+
+#[derive(Debug, Clone)]
+pub struct TouchState {
+    pub touches: [TouchData; MAX_TOUCH_POINTS],
+}
+
+impl Default for TouchState {
+    fn default() -> Self {
+        Self {
+            touches: [TouchData::default(); MAX_TOUCH_POINTS],
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum InputError {
+    OpenFailed(String),
+    GrabFailed(String),
+    ReadError(String),
+}
+
+impl std::fmt::Display for InputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InputError::OpenFailed(msg) => write!(f, "open failed: {}", msg),
+            InputError::GrabFailed(msg) => write!(f, "grab failed: {}", msg),
+            InputError::ReadError(msg) => write!(f, "read error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for InputError {}
+
+#[allow(dead_code)]
+pub trait InputBackend: Send + 'static {
+    fn open(device_path: &Path) -> Result<Self, InputError>
+    where
+        Self: Sized;
+    fn grab(&mut self) -> Result<(), InputError>;
+    fn ungrab(&mut self) -> Result<(), InputError>;
+    fn poll_events(&mut self) -> Result<Option<TouchState>, InputError>;
+}

@@ -1,0 +1,11 @@
+[package]
+name = "tapview"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+evdev = "0.12"
+udev = "0.9"
+clap = { version = "4", features = ["derive"] }
