@@ -15,21 +15,21 @@ A Linux touchpad visualizer. Shows multitouch contact points in real time using 
 
 ### Build dependencies
 
-You need a Rust toolchain and development headers for libudev:
+You need a Rust toolchain and development headers for libudev and libinput:
 
 **Fedora / RHEL:**
 ```
-sudo dnf install libudev-devel
+sudo dnf install libudev-devel libinput-devel
 ```
 
 **Debian / Ubuntu:**
 ```
-sudo apt install libudev-dev
+sudo apt install libudev-dev libinput-dev
 ```
 
 **Arch:**
 ```
-sudo pacman -S systemd-libs
+sudo pacman -S systemd-libs libinput
 ```
 
 You also need the standard graphics libs that eframe/egui depend on (typically already present on desktop systems):
@@ -68,6 +68,7 @@ sudo ./target/release/tapview [OPTIONS]
 |------|-------------|
 | `-t, --trails <N>` | Number of trail frames to show (default: 20, max: 20) |
 | `-v, --verbose` | Print raw kernel multitouch events to stderr |
+| `-l, --libinput` | Show libinput pointer/scroll/gesture data in a right side panel |
 | `-h, --help` | Show help |
 
 ### Controls
@@ -88,6 +89,9 @@ sudo ./target/release/tapview --trails 5
 
 # Debug raw events
 sudo ./target/release/tapview --verbose
+
+# Compare raw events with libinput interpretation
+sudo ./target/release/tapview --libinput
 ```
 
 ## Architecture
@@ -104,6 +108,8 @@ src/
   multitouch.rs        MT Protocol B state machine (platform-independent)
   dimensions.rs        Touchpad-to-screen scaling math
   render.rs            egui Painter drawing helpers
+  libinput_backend.rs  Libinput library integration (pointer, scroll, gestures)
+  libinput_state.rs    Libinput event state for visualization
   input/
     mod.rs             InputBackend trait
     evdev_backend.rs   Linux evdev implementation

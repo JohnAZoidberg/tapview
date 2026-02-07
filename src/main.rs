@@ -2,6 +2,8 @@ mod app;
 mod dimensions;
 mod discovery;
 mod input;
+mod libinput_backend;
+mod libinput_state;
 mod multitouch;
 mod render;
 
@@ -25,6 +27,10 @@ struct Cli {
     /// Enable verbose event logging to stderr
     #[arg(short, long)]
     verbose: bool,
+
+    /// Show libinput debug-events in a side panel
+    #[arg(short, long)]
+    libinput: bool,
 }
 
 fn main() {
@@ -92,10 +98,18 @@ fn main() {
         }
     });
 
+    // Optionally spawn libinput backend thread
+    let libinput_rx = if cli.libinput {
+        Some(libinput_backend::spawn_libinput_thread(&device.devnode))
+    } else {
+        None
+    };
+
     // Run eframe
+    let initial_width = if cli.libinput { 1100.0 } else { 672.0 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([672.0, 432.0])
+            .with_inner_size([initial_width, 432.0])
             .with_min_inner_size([320.0, 240.0])
             .with_title("Tapview - Touchpad Visualizer")
             .with_always_on_top(),
@@ -105,7 +119,14 @@ fn main() {
     eframe::run_native(
         "Tapview",
         options,
-        Box::new(move |_cc| Ok(Box::new(TapviewApp::new(touch_rx, grab_tx, trails)))),
+        Box::new(move |_cc| {
+            Ok(Box::new(TapviewApp::new(
+                touch_rx,
+                grab_tx,
+                libinput_rx,
+                trails,
+            )))
+        }),
     )
     .expect("Failed to run eframe");
 }

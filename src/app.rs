@@ -1,5 +1,7 @@
 use crate::dimensions::Dimensions;
 use crate::input::TouchState;
+use crate::libinput_backend::LibinputEvent;
+use crate::libinput_state::LibinputState;
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use crate::render;
 use std::sync::mpsc;
@@ -14,10 +16,12 @@ pub enum GrabCommand {
 pub struct TapviewApp {
     touch_rx: mpsc::Receiver<TouchState>,
     grab_tx: mpsc::Sender<GrabCommand>,
+    libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
     dims: Dimensions,
     current_touches: [TouchData; MAX_TOUCH_POINTS],
     buttons: ButtonState,
     touch_history: Vec<[TouchData; MAX_TOUCH_POINTS]>,
+    libinput: LibinputState,
     trails: usize,
     grabbed: bool,
 }
@@ -26,15 +30,18 @@ impl TapviewApp {
     pub fn new(
         touch_rx: mpsc::Receiver<TouchState>,
         grab_tx: mpsc::Sender<GrabCommand>,
+        libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
         trails: usize,
     ) -> Self {
         Self {
             touch_rx,
             grab_tx,
+            libinput_rx,
             dims: Dimensions::default(),
             current_touches: [TouchData::default(); MAX_TOUCH_POINTS],
             buttons: ButtonState::default(),
             touch_history: vec![[TouchData::default(); MAX_TOUCH_POINTS]; HISTORY_MAX],
+            libinput: LibinputState::default(),
             trails,
             grabbed: false,
         }
@@ -49,10 +56,12 @@ impl eframe::App for TapviewApp {
             self.buttons = state.buttons;
         }
 
-        // Update screen dimensions
-        let screen_rect = ctx.screen_rect();
-        self.dims.screen_width = screen_rect.width();
-        self.dims.screen_height = screen_rect.height();
+        // Drain and apply libinput events
+        if let Some(rx) = &self.libinput_rx {
+            while let Ok(event) = rx.try_recv() {
+                self.libinput.apply_event(&event);
+            }
+        }
 
         // Handle grab/ungrab keys
         ctx.input(|i| {
@@ -73,8 +82,27 @@ impl eframe::App for TapviewApp {
             }
         }
 
+        // Show libinput side panel if we have a receiver
+        if self.libinput_rx.is_some() {
+            egui::SidePanel::right("libinput_panel")
+                .default_width(200.0)
+                .min_width(150.0)
+                .show(ctx, |ui| {
+                    render::draw_libinput_panel(ui, &self.libinput);
+                });
+        }
+
+        // Decay libinput values after rendering
+        self.libinput.decay();
+
+        // Update dimensions from central panel area
+        let central_rect = ctx.available_rect();
+        self.dims.screen_width = central_rect.width();
+        self.dims.screen_height = central_rect.height();
+
         let scale = self.dims.get_touchpad_scale();
         let corner = self.dims.get_touchpad_corner(scale);
+        let corner = egui::Pos2::new(corner.x + central_rect.min.x, corner.y + central_rect.min.y);
         let cscale = scale.clamp(0.5, 2.0);
 
         egui::CentralPanel::default()
@@ -121,8 +149,10 @@ impl eframe::App for TapviewApp {
                 self.touch_history[0] = self.current_touches;
 
                 // Draw status text
-                let center =
-                    egui::Pos2::new(self.dims.screen_width / 2.0, self.dims.screen_height / 2.0);
+                let center = egui::Pos2::new(
+                    central_rect.min.x + self.dims.screen_width / 2.0,
+                    central_rect.min.y + self.dims.screen_height / 2.0,
+                );
 
                 let text = if self.grabbed {
                     "Press ESC to restore focus"
