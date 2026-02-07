@@ -3,6 +3,13 @@ use evdev::{AbsoluteAxisType, EventType, InputEvent, Key};
 pub const MAX_TOUCH_POINTS: usize = 10;
 
 #[derive(Clone, Copy, Debug, Default)]
+pub struct ButtonState {
+    pub left: bool,
+    pub right: bool,
+    pub middle: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct TouchData {
     pub used: bool,
     pub pressed: bool,
@@ -46,6 +53,7 @@ pub struct MTStateMachine {
     state: MTState,
     slot: Option<usize>,
     pub touches: [TouchData; MAX_TOUCH_POINTS],
+    pub buttons: ButtonState,
 }
 
 impl Default for MTStateMachine {
@@ -54,6 +62,7 @@ impl Default for MTStateMachine {
             state: MTState::Loading,
             slot: None,
             touches: [TouchData::default(); MAX_TOUCH_POINTS],
+            buttons: ButtonState::default(),
         }
     }
 }
@@ -81,6 +90,15 @@ impl MTStateMachine {
                     }
                     Key::BTN_TOOL_DOUBLETAP => {
                         self.touches[0].pressed_double = event.value() == 1;
+                    }
+                    Key::BTN_LEFT => {
+                        self.buttons.left = event.value() == 1;
+                    }
+                    Key::BTN_RIGHT => {
+                        self.buttons.right = event.value() == 1;
+                    }
+                    Key::BTN_MIDDLE => {
+                        self.buttons.middle = event.value() == 1;
                     }
                     _ => {}
                 }
@@ -209,6 +227,9 @@ fn code_lookup(code: u16) -> Option<&'static str> {
         0x3b => Some("DISTANCE"),
         0x3c => Some("TOOL_X"),
         0x3d => Some("TOOL_Y"),
+        0x110 => Some("BTN_LEFT"),
+        0x111 => Some("BTN_RIGHT"),
+        0x112 => Some("BTN_MIDDLE"),
         0x145 => Some("BTN_TOOL_FINGER"),
         0x14a => Some("BTN_TOUCH"),
         0x14d => Some("BTN_TOOL_DOUBLETAP"),

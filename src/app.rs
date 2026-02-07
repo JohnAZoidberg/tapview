@@ -1,6 +1,6 @@
 use crate::dimensions::Dimensions;
 use crate::input::TouchState;
-use crate::multitouch::{TouchData, MAX_TOUCH_POINTS};
+use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use crate::render;
 use std::sync::mpsc;
 
@@ -16,6 +16,7 @@ pub struct TapviewApp {
     grab_tx: mpsc::Sender<GrabCommand>,
     dims: Dimensions,
     current_touches: [TouchData; MAX_TOUCH_POINTS],
+    buttons: ButtonState,
     touch_history: Vec<[TouchData; MAX_TOUCH_POINTS]>,
     trails: usize,
     grabbed: bool,
@@ -32,6 +33,7 @@ impl TapviewApp {
             grab_tx,
             dims: Dimensions::default(),
             current_touches: [TouchData::default(); MAX_TOUCH_POINTS],
+            buttons: ButtonState::default(),
             touch_history: vec![[TouchData::default(); MAX_TOUCH_POINTS]; HISTORY_MAX],
             trails,
             grabbed: false,
@@ -44,6 +46,7 @@ impl eframe::App for TapviewApp {
         // Drain all pending touch states from the input thread
         while let Ok(state) = self.touch_rx.try_recv() {
             self.current_touches = state.touches;
+            self.buttons = state.buttons;
         }
 
         // Update screen dimensions
@@ -80,11 +83,17 @@ impl eframe::App for TapviewApp {
                 let painter = ui.painter();
 
                 // Draw touchpad boundary
-                render::draw_touchpad_boundary(
+                let boundary_width = self.dims.touchpad_max_extent_x * scale;
+                let boundary_height = self.dims.touchpad_max_extent_y * scale;
+                render::draw_touchpad_boundary(painter, corner, boundary_width, boundary_height);
+
+                // Draw button indicators
+                render::draw_button_indicators(
                     painter,
+                    &self.buttons,
                     corner,
-                    self.dims.touchpad_max_extent_x * scale,
-                    self.dims.touchpad_max_extent_y * scale,
+                    boundary_width,
+                    boundary_height,
                 );
 
                 // Draw historical touch data (trails)

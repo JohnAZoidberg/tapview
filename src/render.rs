@@ -1,4 +1,4 @@
-use crate::multitouch::TouchData;
+use crate::multitouch::{ButtonState, TouchData};
 use egui::{Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 pub const MAGENTA: Color32 = Color32::from_rgb(255, 0, 182);
@@ -89,6 +89,42 @@ pub fn draw_touch(
         FontId::monospace(40.0 * cscale),
         Color32::BLACK,
     );
+}
+
+pub fn draw_button_indicators(
+    painter: &Painter,
+    buttons: &ButtonState,
+    corner: Pos2,
+    boundary_width: f32,
+    boundary_height: f32,
+) {
+    let y = corner.y + boundary_height + 8.0;
+    let font = FontId::monospace(14.0);
+    let labels = [
+        ("L", buttons.left),
+        ("M", buttons.middle),
+        ("R", buttons.right),
+    ];
+
+    let total_width = labels.len() as f32 * 24.0 - 8.0;
+    let start_x = corner.x + boundary_width / 2.0 - total_width / 2.0;
+
+    for (i, (label, active)) in labels.iter().enumerate() {
+        let x = start_x + i as f32 * 24.0;
+        let center = Pos2::new(x, y);
+        let color = if *active {
+            MAGENTA
+        } else {
+            Color32::from_rgb(200, 200, 200)
+        };
+        painter.text(
+            center,
+            egui::Align2::CENTER_TOP,
+            *label,
+            font.clone(),
+            color,
+        );
+    }
 }
 
 fn touch_to_screen(touch: &TouchData, corner: Pos2, scale: f32) -> Pos2 {

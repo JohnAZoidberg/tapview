@@ -50,6 +50,7 @@ impl InputBackend for EvdevBackend {
                 }
                 Ok(Some(TouchState {
                     touches: self.machine.touches,
+                    buttons: self.machine.buttons,
                 }))
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),

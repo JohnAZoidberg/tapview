@@ -1,17 +1,19 @@
 pub mod evdev_backend;
 
-use crate::multitouch::{TouchData, MAX_TOUCH_POINTS};
+use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct TouchState {
     pub touches: [TouchData; MAX_TOUCH_POINTS],
+    pub buttons: ButtonState,
 }
 
 impl Default for TouchState {
     fn default() -> Self {
         Self {
             touches: [TouchData::default(); MAX_TOUCH_POINTS],
+            buttons: ButtonState::default(),
         }
     }
 }
