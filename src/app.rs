@@ -1,4 +1,5 @@
 use crate::dimensions::Dimensions;
+use crate::heatmap::HeatmapFrame;
 use crate::input::TouchState;
 use crate::libinput_backend::LibinputEvent;
 use crate::libinput_state::LibinputState;
@@ -17,6 +18,8 @@ pub struct TapviewApp {
     touch_rx: mpsc::Receiver<TouchState>,
     grab_tx: mpsc::Sender<GrabCommand>,
     libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
+    heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
+    heatmap_frame: Option<HeatmapFrame>,
     dims: Dimensions,
     current_touches: [TouchData; MAX_TOUCH_POINTS],
     buttons: ButtonState,
@@ -31,12 +34,15 @@ impl TapviewApp {
         touch_rx: mpsc::Receiver<TouchState>,
         grab_tx: mpsc::Sender<GrabCommand>,
         libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
+        heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
         trails: usize,
     ) -> Self {
         Self {
             touch_rx,
             grab_tx,
             libinput_rx,
+            heatmap_rx,
+            heatmap_frame: None,
             dims: Dimensions::default(),
             current_touches: [TouchData::default(); MAX_TOUCH_POINTS],
             buttons: ButtonState::default(),
@@ -63,6 +69,13 @@ impl eframe::App for TapviewApp {
             }
         }
 
+        // Drain heatmap frames, keep only the latest
+        if let Some(rx) = &self.heatmap_rx {
+            while let Ok(frame) = rx.try_recv() {
+                self.heatmap_frame = Some(frame);
+            }
+        }
+
         // Handle grab/ungrab keys
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Enter) && !self.grabbed {
@@ -80,6 +93,16 @@ impl eframe::App for TapviewApp {
                 self.dims
                     .maybe_grow_touchpad_extent(touch.position_x as f32, touch.position_y as f32);
             }
+        }
+
+        // Show heatmap bottom panel if active
+        if let Some(frame) = &self.heatmap_frame {
+            egui::TopBottomPanel::bottom("heatmap_panel")
+                .default_height(200.0)
+                .min_height(100.0)
+                .show(ctx, |ui| {
+                    render::draw_heatmap_panel(ui, frame);
+                });
         }
 
         // Show libinput side panel if we have a receiver

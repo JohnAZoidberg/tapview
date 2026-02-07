@@ -1,3 +1,4 @@
+use crate::heatmap::HeatmapFrame;
 use crate::libinput_state::{GestureKind, LibinputState};
 use crate::multitouch::{ButtonState, TouchData};
 use egui::{Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
@@ -439,4 +440,91 @@ pub fn draw_libinput_panel(ui: &mut egui::Ui, state: &LibinputState) {
                 }
             });
     });
+}
+
+// --- heatmap visualization ---
+
+/// Map a normalized value 0.0..=1.0 to a blue → green → yellow → red gradient.
+fn heatmap_color(t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let (r, g, b) = if t < 0.333 {
+        // blue → green
+        let s = t / 0.333;
+        (0.0, s, 1.0 - s)
+    } else if t < 0.666 {
+        // green → yellow
+        let s = (t - 0.333) / 0.333;
+        (s, 1.0, 0.0)
+    } else {
+        // yellow → red
+        let s = (t - 0.666) / 0.334;
+        (1.0, 1.0 - s, 0.0)
+    };
+    Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+}
+
+/// Draw the heatmap panel contents: a 2D grid of colored cells.
+pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame) {
+    let panel_rect = ui.available_rect_before_wrap();
+    let painter = ui.painter();
+
+    // Dimension label at top
+    let label = format!("{}x{}", frame.rows, frame.cols);
+    let label_font = FontId::proportional(13.0);
+    let cx = panel_rect.center().x;
+    painter.text(
+        Pos2::new(cx, panel_rect.min.y + 4.0),
+        egui::Align2::CENTER_TOP,
+        &label,
+        label_font,
+        Color32::BLACK,
+    );
+
+    if frame.rows == 0 || frame.cols == 0 || frame.data.is_empty() {
+        ui.allocate_rect(panel_rect, egui::Sense::hover());
+        return;
+    }
+
+    // Find min/max for normalization
+    let max_abs = frame
+        .data
+        .iter()
+        .map(|v| v.unsigned_abs())
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32;
+
+    // Grid area below the label
+    let grid_top = panel_rect.min.y + 22.0;
+    let grid_width = panel_rect.width() - 4.0;
+    let grid_height = panel_rect.max.y - grid_top - 2.0;
+
+    // Fixed aspect ratio: square cells sized to fit the available space
+    let cell_w = grid_width / frame.cols as f32;
+    let cell_h = grid_height / frame.rows as f32;
+    let cell_size = cell_w.min(cell_h);
+
+    let total_w = cell_size * frame.cols as f32;
+    let total_h = cell_size * frame.rows as f32;
+    let offset_x = panel_rect.min.x + (panel_rect.width() - total_w) / 2.0;
+    let offset_y = grid_top + (grid_height - total_h) / 2.0;
+
+    for row in 0..frame.rows {
+        for col in 0..frame.cols {
+            let idx = row * frame.cols + col;
+            let value = frame.data.get(idx).copied().unwrap_or(0);
+            let t = value.unsigned_abs() as f32 / max_abs;
+            let color = heatmap_color(t);
+
+            let x = offset_x + col as f32 * cell_size;
+            let y = offset_y + row as f32 * cell_size;
+            painter.rect_filled(
+                Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_size, cell_size)),
+                0.0,
+                color,
+            );
+        }
+    }
+
+    ui.allocate_rect(panel_rect, egui::Sense::hover());
 }

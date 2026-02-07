@@ -1,6 +1,7 @@
 mod app;
 mod dimensions;
 mod discovery;
+mod heatmap;
 mod input;
 mod libinput_backend;
 mod libinput_state;
@@ -31,6 +32,14 @@ struct Cli {
     /// Show libinput debug-events in a side panel
     #[arg(short, long)]
     libinput: bool,
+
+    /// Show raw capacitive heatmap (PixArt touchpads only)
+    #[arg(long)]
+    heatmap: bool,
+
+    /// Override heatmap column count (for debugging stride issues)
+    #[arg(long)]
+    heatmap_cols: Option<usize>,
 }
 
 fn main() {
@@ -105,11 +114,41 @@ fn main() {
         None
     };
 
+    // Optionally spawn heatmap backend thread
+    let heatmap_rx = if cli.heatmap {
+        match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
+            Ok(hidraw_path) => {
+                eprintln!("heatmap: found hidraw device: {}", hidraw_path.display());
+                match heatmap::discovery::determine_burst_report_length(&hidraw_path) {
+                    Ok(burst_len) => {
+                        eprintln!("heatmap: burst report length = {}", burst_len);
+                        Some(heatmap::backend::spawn_heatmap_thread(
+                            &hidraw_path,
+                            burst_len,
+                            cli.heatmap_cols,
+                        ))
+                    }
+                    Err(e) => {
+                        eprintln!("heatmap: failed to determine burst length: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("heatmap: failed to find sibling hidraw device: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
     // Run eframe
     let initial_width = if cli.libinput { 1100.0 } else { 672.0 };
+    let initial_height = if cli.heatmap { 650.0 } else { 432.0 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([initial_width, 432.0])
+            .with_inner_size([initial_width, initial_height])
             .with_min_inner_size([320.0, 240.0])
             .with_title("Tapview - Touchpad Visualizer")
             .with_always_on_top(),
@@ -124,6 +163,7 @@ fn main() {
                 touch_rx,
                 grab_tx,
                 libinput_rx,
+                heatmap_rx,
                 trails,
             )))
         }),
