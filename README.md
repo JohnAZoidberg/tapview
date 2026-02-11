@@ -57,9 +57,30 @@ sudo apt install libxkbcommon-dev libwayland-dev libx11-dev
 nix develop
 ```
 
+Or run directly without cloning:
+```
+# Without cloning
+sudo nix run github:JohnAZoidberg/tapview
+sudo nix run github:JohnAZoidberg/tapview -- -l --heatmap
+
+# In cloned repo
+sudo nix run
+sudo nix run . -- -l --heatmap
+```
+
 ### Runtime
 
-Requires read access to the touchpad's `/dev/input/event*` device. Typically this means running as root or being in the `input` group.
+Requires read access to the touchpad's `/dev/input/event*` device. Typically this means running as root or adding your user to the appropriate groups:
+
+```bash
+# For /dev/input/event* access (evdev)
+sudo usermod -aG input $USER
+
+# For /dev/hidraw* access (heatmap feature)
+sudo usermod -aG hidraw $USER
+```
+
+Log out and back in for group changes to take effect. After this, you can run tapview without sudo.
 
 ## Building
 
