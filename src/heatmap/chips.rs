@@ -57,9 +57,10 @@ pub fn read_matrix_dims(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<(us
         }
         ChipVariant::PLP239 => {
             // Bank 9 (AFE), values are count-1
+            // Drives = cols (fast/stride axis), senses = rows
             let drives = read_reg(dev, 9, 0x01)? as usize + 1;
             let senses = read_reg(dev, 9, 0x02)? as usize + 1;
-            Ok((drives, senses))
+            Ok((senses, drives))
         }
     }
 }
