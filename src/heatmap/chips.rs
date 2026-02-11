@@ -159,14 +159,13 @@ pub async fn alc_reset<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Result<(
             // R_ALC_RESET_CTRL (Bank 9, 0x3A): bit[1] = reset gain + clear IIR
             write_reg(dev, 9, 0x3A, 0x02).await
         }
-        ChipVariant::PJP274
-        | ChipVariant::PJP343
-        | ChipVariant::PCT1036
-        | ChipVariant::PJP255
-        | ChipVariant::PJP215 => {
-            // PJP chips: trigger ALC start via Set_Ana_Start (Bank 0, 0x06) bit[1]
-            let current = read_reg(dev, 0, 0x06).await?;
-            write_reg(dev, 0, 0x06, current | 0x02).await
+        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PCT1036 => {
+            // R_ALC_RESET_CTRL (Bank 2, 0x15): bit[1] = reset gain + clear IIR
+            write_reg(dev, 2, 0x15, 0x02).await
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            // PJP255/215 use same DSP bank layout as PJP274
+            write_reg(dev, 2, 0x15, 0x02).await
         }
     }
 }
@@ -179,9 +178,14 @@ pub async fn alc_enable<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Result<
             let current = read_user_reg(dev, 0, 0x40).await?;
             write_user_reg(dev, 0, 0x40, current | 0x02).await
         }
-        _ => {
-            log::warn!("alc_enable: not yet implemented for {}", chip);
-            Ok(())
+        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PCT1036 => {
+            // R_HW_SelfRun (Bank 6, 0x12): bit[1] = auto-trigger ALC from IIR ready
+            let current = read_reg(dev, 6, 0x12).await?;
+            write_reg(dev, 6, 0x12, current | 0x02).await
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            let current = read_reg(dev, 6, 0x12).await?;
+            write_reg(dev, 6, 0x12, current | 0x02).await
         }
     }
 }
@@ -194,9 +198,14 @@ pub async fn alc_disable<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Result
             let current = read_user_reg(dev, 0, 0x40).await?;
             write_user_reg(dev, 0, 0x40, current & !0x02).await
         }
-        _ => {
-            log::warn!("alc_disable: not yet implemented for {}", chip);
-            Ok(())
+        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PCT1036 => {
+            // R_HW_SelfRun (Bank 6, 0x12): bit[1] = auto-trigger ALC
+            let current = read_reg(dev, 6, 0x12).await?;
+            write_reg(dev, 6, 0x12, current & !0x02).await
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            let current = read_reg(dev, 6, 0x12).await?;
+            write_reg(dev, 6, 0x12, current & !0x02).await
         }
     }
 }
@@ -208,7 +217,15 @@ pub async fn alc_is_enabled<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Res
             let val = read_user_reg(dev, 0, 0x40).await?;
             Ok(val & 0x02 != 0)
         }
-        _ => Ok(true), // Assume enabled for chips we can't query
+        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PCT1036 => {
+            // R_HW_SelfRun (Bank 6, 0x12): bit[1]
+            let val = read_reg(dev, 6, 0x12).await?;
+            Ok(val & 0x02 != 0)
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            let val = read_reg(dev, 6, 0x12).await?;
+            Ok(val & 0x02 != 0)
+        }
     }
 }
 
