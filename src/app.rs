@@ -1,5 +1,5 @@
 use crate::dimensions::Dimensions;
-use crate::heatmap::HeatmapFrame;
+use crate::heatmap::{AlcCommand, HeatmapFrame};
 use crate::input::TouchState;
 use crate::libinput_backend::LibinputEvent;
 use crate::libinput_state::LibinputState;
@@ -8,6 +8,8 @@ use crate::render;
 use std::sync::mpsc;
 
 const HISTORY_MAX: usize = 20;
+/// Number of heatmap mean values to keep for the time-series plot.
+const HEATMAP_STATS_MAX: usize = 600;
 
 pub enum GrabCommand {
     Grab,
@@ -19,7 +21,13 @@ pub struct TapviewApp {
     grab_tx: mpsc::Sender<GrabCommand>,
     libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
     heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
+    alc_tx: Option<mpsc::Sender<AlcCommand>>,
     heatmap_frame: Option<HeatmapFrame>,
+    /// Rolling buffer of per-frame raw mean values for time-series plot.
+    heatmap_means: Vec<f64>,
+    /// Rolling buffer of per-frame smoothed (EMA) means for trend line.
+    heatmap_smoothed: Vec<f64>,
+    alc_enabled: bool,
     dims: Dimensions,
     current_touches: [TouchData; MAX_TOUCH_POINTS],
     buttons: ButtonState,
@@ -35,6 +43,7 @@ impl TapviewApp {
         grab_tx: mpsc::Sender<GrabCommand>,
         libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
         heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
+        alc_tx: Option<mpsc::Sender<AlcCommand>>,
         trails: usize,
     ) -> Self {
         Self {
@@ -42,7 +51,11 @@ impl TapviewApp {
             grab_tx,
             libinput_rx,
             heatmap_rx,
+            alc_tx,
             heatmap_frame: None,
+            heatmap_means: Vec::with_capacity(HEATMAP_STATS_MAX),
+            heatmap_smoothed: Vec::with_capacity(HEATMAP_STATS_MAX),
+            alc_enabled: true,
             dims: Dimensions::default(),
             current_touches: [TouchData::default(); MAX_TOUCH_POINTS],
             buttons: ButtonState::default(),
@@ -69,9 +82,17 @@ impl eframe::App for TapviewApp {
             }
         }
 
-        // Drain heatmap frames, keep only the latest
+        // Drain heatmap frames, accumulate stats, keep only the latest for display
         if let Some(rx) = &self.heatmap_rx {
             while let Ok(frame) = rx.try_recv() {
+                // Record stats for time-series
+                if self.heatmap_means.len() >= HEATMAP_STATS_MAX {
+                    let half = HEATMAP_STATS_MAX / 2;
+                    self.heatmap_means.drain(..half);
+                    self.heatmap_smoothed.drain(..half);
+                }
+                self.heatmap_means.push(frame.mean);
+                self.heatmap_smoothed.push(frame.smoothed_mean);
                 self.heatmap_frame = Some(frame);
             }
         }
@@ -85,6 +106,21 @@ impl eframe::App for TapviewApp {
                 let _ = self.grab_tx.send(GrabCommand::Ungrab);
                 self.grabbed = false;
             }
+
+            // ALC commands (only when heatmap is active)
+            if let Some(tx) = &self.alc_tx {
+                if i.key_pressed(egui::Key::R) {
+                    let _ = tx.send(AlcCommand::Reset);
+                }
+                if i.key_pressed(egui::Key::A) {
+                    if self.alc_enabled {
+                        let _ = tx.send(AlcCommand::Disable);
+                    } else {
+                        let _ = tx.send(AlcCommand::Enable);
+                    }
+                    self.alc_enabled = !self.alc_enabled;
+                }
+            }
         });
 
         // Grow touchpad extents from current touches
@@ -97,11 +133,14 @@ impl eframe::App for TapviewApp {
 
         // Show heatmap bottom panel if active
         if let Some(frame) = &self.heatmap_frame {
+            let means = &self.heatmap_means;
+            let smoothed = &self.heatmap_smoothed;
+            let alc_enabled = self.alc_enabled;
             egui::TopBottomPanel::bottom("heatmap_panel")
                 .default_height(200.0)
                 .min_height(100.0)
                 .show(ctx, |ui| {
-                    render::draw_heatmap_panel(ui, frame);
+                    render::draw_heatmap_panel(ui, frame, means, smoothed, alc_enabled);
                 });
         }
 
@@ -179,6 +218,8 @@ impl eframe::App for TapviewApp {
 
                 let text = if self.grabbed {
                     "Press ESC to restore focus"
+                } else if self.alc_tx.is_some() {
+                    "ENTER=grab  R=ALC reset  A=ALC on/off"
                 } else {
                     "Press ENTER to grab touchpad"
                 };

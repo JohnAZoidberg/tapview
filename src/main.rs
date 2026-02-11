@@ -115,18 +115,21 @@ fn main() {
     };
 
     // Optionally spawn heatmap backend thread
-    let heatmap_rx = if cli.heatmap {
+    let (heatmap_rx, alc_tx) = if cli.heatmap {
         match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
             Ok(hidraw_path) => {
                 eprintln!("heatmap: found hidraw device: {}", hidraw_path.display());
                 match heatmap::discovery::determine_burst_report_length(&hidraw_path) {
                     Ok(burst_len) => {
                         eprintln!("heatmap: burst report length = {}", burst_len);
-                        Some(heatmap::backend::spawn_heatmap_thread(
+                        let (alc_tx, alc_rx) = mpsc::channel();
+                        let frame_rx = heatmap::backend::spawn_heatmap_thread(
                             &hidraw_path,
                             burst_len,
                             cli.heatmap_cols,
-                        ))
+                            alc_rx,
+                        );
+                        (Some(frame_rx), Some(alc_tx))
                     }
                     Err(e) => {
                         eprintln!("heatmap: failed to determine burst length: {}", e);
@@ -140,7 +143,7 @@ fn main() {
             }
         }
     } else {
-        None
+        (None, None)
     };
 
     // Run eframe
@@ -164,6 +167,7 @@ fn main() {
                 grab_tx,
                 libinput_rx,
                 heatmap_rx,
+                alc_tx,
                 trails,
             )))
         }),
