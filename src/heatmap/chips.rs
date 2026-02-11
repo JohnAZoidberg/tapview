@@ -1,5 +1,5 @@
 use super::hidraw::HidrawDevice;
-use super::protocol::{burst_read, read_reg, read_user_reg, write_reg};
+use super::protocol::{burst_read, read_reg, read_user_reg, write_reg, write_user_reg};
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +139,65 @@ fn read_frame_pjp255(
     write_reg(dev, 2, 0x0A, 0x01)?;
 
     Ok(data)
+}
+
+// --- ALC (Automatic Level Calibration) control ---
+
+/// Force ALC IIR filter reset, clearing the learned baseline.
+/// The firmware will re-converge the per-cell gains from scratch.
+pub fn alc_reset(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<()> {
+    match chip {
+        ChipVariant::PLP239 => {
+            // R_ALC_RESET_CTRL (Bank 9, 0x3A): bit[1] = reset gain + clear IIR
+            write_reg(dev, 9, 0x3A, 0x02)
+        }
+        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            // PJP chips: trigger ALC start via Set_Ana_Start (Bank 0, 0x06) bit[1]
+            let current = read_reg(dev, 0, 0x06)?;
+            write_reg(dev, 0, 0x06, current | 0x02)
+        }
+    }
+}
+
+/// Enable ALC (automatic per-cell gain adjustment).
+pub fn alc_enable(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<()> {
+    match chip {
+        ChipVariant::PLP239 => {
+            // UserBank Navigation, 0x40: bit[1] = ALC enable
+            let current = read_user_reg(dev, 0, 0x40)?;
+            write_user_reg(dev, 0, 0x40, current | 0x02)
+        }
+        _ => {
+            eprintln!("alc_enable: not yet implemented for {}", chip);
+            Ok(())
+        }
+    }
+}
+
+/// Disable ALC (freeze current per-cell gain values).
+pub fn alc_disable(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<()> {
+    match chip {
+        ChipVariant::PLP239 => {
+            // UserBank Navigation, 0x40: bit[1] = ALC enable
+            let current = read_user_reg(dev, 0, 0x40)?;
+            write_user_reg(dev, 0, 0x40, current & !0x02)
+        }
+        _ => {
+            eprintln!("alc_disable: not yet implemented for {}", chip);
+            Ok(())
+        }
+    }
+}
+
+/// Read the current ALC enabled state (true = enabled).
+pub fn alc_is_enabled(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<bool> {
+    match chip {
+        ChipVariant::PLP239 => {
+            let val = read_user_reg(dev, 0, 0x40)?;
+            Ok(val & 0x02 != 0)
+        }
+        _ => Ok(true), // Assume enabled for chips we can't query
+    }
 }
 
 fn read_frame_plp239(

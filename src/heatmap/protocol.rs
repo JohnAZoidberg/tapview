@@ -21,6 +21,11 @@ pub fn read_reg(dev: &HidrawDevice, bank: u8, addr: u8) -> io::Result<u8> {
     Ok(buf[3])
 }
 
+/// Write a user register via Report 0x43.
+pub fn write_user_reg(dev: &HidrawDevice, bank: u8, addr: u8, value: u8) -> io::Result<()> {
+    dev.set_feature(&[REPORT_USER, addr, bank, value])
+}
+
 /// Read a user register via Report 0x43.
 pub fn read_user_reg(dev: &HidrawDevice, bank: u8, addr: u8) -> io::Result<u8> {
     dev.set_feature(&[REPORT_USER, addr, bank | READ_FLAG, 0x00])?;
