@@ -145,7 +145,6 @@ fn parse_report_descriptor_for_burst_len(desc: &[u8]) -> Option<usize> {
             0x84 => {
                 if let Some(&id) = data.first() {
                     current_report_id = Some(id);
-                    current_report_count = None;
                 }
             }
             // Report Count (Global, tag = 0x94)
