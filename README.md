@@ -6,7 +6,7 @@ A Linux touchpad visualizer. Shows multitouch contact points in real time using 
 
 | Hardware            | Raw Events | libinput | Heatmap |
 |---------------------|------------|----------|---------|
-| Framework Laptop 12 | Working    | Working  |         |
+| Framework Laptop 12 | Working    | Working  | Working |
 | Framework Laptop 13 | Working    | Working  | Working |
 | Framework Laptop 16 | Working    | Working  | Working |
 
