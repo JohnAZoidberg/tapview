@@ -1,7 +1,11 @@
-use super::chips::{identify_chip, read_frame, read_matrix_dims, ChipVariant};
+use super::chips::{
+    alc_disable, alc_enable, alc_is_enabled, alc_reset, identify_chip, read_frame,
+    read_matrix_dims, ChipVariant,
+};
 use super::power::{self, PowerStatus, SleepWake};
 use super::protocol::{read_reg, read_user_reg};
-use super::{HeatmapFrame, HidDevice};
+use super::{AlcCommand, HeatmapFrame, HidDevice};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,6 +20,20 @@ const PAUSE_POLL: Duration = Duration::from_millis(50);
 /// How often the loop reads the pad's power registers, between frames and
 /// also while paused (a handful of register reads, cheap next to a frame).
 const POWER_POLL: Duration = Duration::from_millis(500);
+
+/// EMA smoothing factor for the baseline tracker.
+/// Small alpha = slow response, filters out transient touches.
+/// At ~100 Hz frame rate, alpha=0.005 gives ~200-frame (~2s) smoothing.
+const EMA_ALPHA: f64 = 0.005;
+
+/// Number of frames over which to measure baseline drift rate.
+/// At ~100 Hz this is ~5 seconds worth of smoothed baseline history.
+const DRIFT_WINDOW: usize = 500;
+
+/// Drift rate threshold (smoothed-mean units per frame) to flag active calibration.
+/// If the smoothed baseline drifts more than this per frame, sustained over
+/// DRIFT_WINDOW frames, we flag it as firmware calibration.
+const DRIFT_THRESHOLD: f64 = 0.02;
 
 /// The switches a running heatmap loop watches, shared with its
 /// [`HeatmapStream`].
@@ -38,6 +56,9 @@ struct Flags {
     /// A sleep-wake change picked in the UI, for the loop (which owns the
     /// device) to write before its next power read.
     sleep_wake: Mutex<Option<SleepWake>>,
+    /// An ALC command from the UI, for the loop to send before its next
+    /// frame read.
+    alc: Mutex<Option<AlcCommand>>,
 }
 
 impl Default for Flags {
@@ -47,6 +68,7 @@ impl Default for Flags {
             closed: AtomicBool::new(false),
             power: Mutex::new(None),
             sleep_wake: Mutex::new(None),
+            alc: Mutex::new(None),
         }
     }
 }
@@ -66,6 +88,10 @@ impl HeatmapControl {
 
     fn take_sleep_wake(&self) -> Option<SleepWake> {
         self.inner.sleep_wake.lock().unwrap().take()
+    }
+
+    fn take_alc(&self) -> Option<AlcCommand> {
+        self.inner.alc.lock().unwrap().take()
     }
 
     fn set_power(&self, status: Option<PowerStatus>) {
@@ -105,6 +131,12 @@ impl HeatmapStream {
     /// writes it before its next power read.
     pub fn set_sleep_wake(&self, wake: SleepWake) {
         *self.control.inner.sleep_wake.lock().unwrap() = Some(wake);
+    }
+
+    /// Send an ALC command to the pad; the loop writes it before its next
+    /// frame read.
+    pub fn send_alc(&self, cmd: AlcCommand) {
+        *self.control.inner.alc.lock().unwrap() = Some(cmd);
     }
 }
 
@@ -233,6 +265,21 @@ pub async fn run_heatmap_loop<D, F, Fut>(
         log::info!("heatmap: display cols overridden to {}", display_cols);
     }
 
+    match alc_is_enabled(dev, chip).await {
+        Ok(enabled) => log::info!(
+            "heatmap: ALC is {}",
+            if enabled { "enabled" } else { "disabled" }
+        ),
+        Err(e) => log::warn!("heatmap: failed to read ALC state: {}", e),
+    }
+
+    let start_time = Instant::now();
+    let mut frame_count: u64 = 0;
+    let mut ema: Option<f64> = None;
+    // Smoothed means over the last DRIFT_WINDOW frames, for the drift rate
+    let mut ema_history = VecDeque::with_capacity(DRIFT_WINDOW);
+    let mut was_calibrating = false;
+
     // When the power registers are next read; `None` on chips without them
     // or once a read has failed.
     let mut power_due = power::has_op_mode(chip).then(Instant::now);
@@ -245,6 +292,9 @@ pub async fn run_heatmap_loop<D, F, Fut>(
                 .await
                 .then(|| Instant::now() + POWER_POLL);
         }
+        if let Some(cmd) = control.take_alc() {
+            run_alc_command(dev, chip, cmd, start_time).await;
+        }
         if !control.enabled() {
             pause().await;
             continue;
@@ -252,11 +302,56 @@ pub async fn run_heatmap_loop<D, F, Fut>(
         // Hardware read always uses register-derived dimensions
         match read_frame(dev, chip, rows, cols, burst_len).await {
             Ok(data) => {
+                frame_count += 1;
                 let display_rows = data.len() / display_cols;
+
+                // Compute raw mean
+                let sum: f64 = data.iter().map(|&v| v as f64).sum();
+                let mean = sum / data.len() as f64;
+
+                // Update slow EMA (smoothed baseline that ignores transient touches)
+                let smoothed_mean = match ema {
+                    Some(prev) => prev + EMA_ALPHA * (mean - prev),
+                    None => mean,
+                };
+                ema = Some(smoothed_mean);
+
+                if ema_history.len() >= DRIFT_WINDOW {
+                    ema_history.pop_front();
+                }
+                ema_history.push_back(smoothed_mean);
+
+                // Drift rate: change in smoothed baseline over the window
+                let drift_rate = if ema_history.len() >= 2 {
+                    (smoothed_mean - ema_history[0]) / ema_history.len() as f64
+                } else {
+                    0.0
+                };
+
+                let calibrating =
+                    ema_history.len() >= DRIFT_WINDOW && drift_rate.abs() > DRIFT_THRESHOLD;
+
+                // Log transitions
+                if calibrating != was_calibrating {
+                    log::info!(
+                        "heatmap: CALIBRATING {} at {:.1}s (frame {}): drift_rate={:.4}/frame, smoothed_mean={:.1}",
+                        if calibrating { "started" } else { "stopped" },
+                        start_time.elapsed().as_secs_f64(),
+                        frame_count,
+                        drift_rate,
+                        smoothed_mean
+                    );
+                }
+                was_calibrating = calibrating;
+
                 let frame = HeatmapFrame {
                     rows: display_rows,
                     cols: display_cols,
                     data,
+                    mean,
+                    smoothed_mean,
+                    drift_rate,
+                    calibrating,
                 };
                 if tx.send(frame).is_err() {
                     // Receiver dropped, UI closed
@@ -268,6 +363,25 @@ pub async fn run_heatmap_loop<D, F, Fut>(
                 break;
             }
         }
+    }
+}
+
+/// Send one ALC command from the UI to the pad, logging the outcome.
+async fn run_alc_command<D: HidDevice>(
+    dev: &D,
+    chip: ChipVariant,
+    cmd: AlcCommand,
+    start_time: Instant,
+) {
+    let elapsed = start_time.elapsed().as_secs_f64();
+    log::info!("heatmap: ALC {} at {:.1}s", cmd, elapsed);
+    let result = match cmd {
+        AlcCommand::Reset => alc_reset(dev, chip).await,
+        AlcCommand::Enable => alc_enable(dev, chip).await,
+        AlcCommand::Disable => alc_disable(dev, chip).await,
+    };
+    if let Err(e) = result {
+        log::warn!("heatmap: ALC {} failed: {}", cmd, e);
     }
 }
 

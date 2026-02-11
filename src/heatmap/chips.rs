@@ -1,4 +1,4 @@
-use super::protocol::{burst_read, read_reg, read_user_reg, write_reg};
+use super::protocol::{burst_read, read_reg, read_user_reg, write_reg, write_user_reg};
 use super::HidDevice;
 use std::io;
 
@@ -147,6 +147,69 @@ async fn read_frame_pjp255<D: HidDevice>(
     write_reg(dev, 2, 0x0A, 0x01).await?;
 
     Ok(data)
+}
+
+// --- ALC (Automatic Level Calibration) control ---
+
+/// Force ALC IIR filter reset, clearing the learned baseline.
+/// The firmware will re-converge the per-cell gains from scratch.
+pub async fn alc_reset<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Result<()> {
+    match chip {
+        ChipVariant::PLP239 => {
+            // R_ALC_RESET_CTRL (Bank 9, 0x3A): bit[1] = reset gain + clear IIR
+            write_reg(dev, 9, 0x3A, 0x02).await
+        }
+        ChipVariant::PJP274
+        | ChipVariant::PJP343
+        | ChipVariant::PCT1036
+        | ChipVariant::PJP255
+        | ChipVariant::PJP215 => {
+            // PJP chips: trigger ALC start via Set_Ana_Start (Bank 0, 0x06) bit[1]
+            let current = read_reg(dev, 0, 0x06).await?;
+            write_reg(dev, 0, 0x06, current | 0x02).await
+        }
+    }
+}
+
+/// Enable ALC (automatic per-cell gain adjustment).
+pub async fn alc_enable<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Result<()> {
+    match chip {
+        ChipVariant::PLP239 => {
+            // UserBank Navigation, 0x40: bit[1] = ALC enable
+            let current = read_user_reg(dev, 0, 0x40).await?;
+            write_user_reg(dev, 0, 0x40, current | 0x02).await
+        }
+        _ => {
+            log::warn!("alc_enable: not yet implemented for {}", chip);
+            Ok(())
+        }
+    }
+}
+
+/// Disable ALC (freeze current per-cell gain values).
+pub async fn alc_disable<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Result<()> {
+    match chip {
+        ChipVariant::PLP239 => {
+            // UserBank Navigation, 0x40: bit[1] = ALC enable
+            let current = read_user_reg(dev, 0, 0x40).await?;
+            write_user_reg(dev, 0, 0x40, current & !0x02).await
+        }
+        _ => {
+            log::warn!("alc_disable: not yet implemented for {}", chip);
+            Ok(())
+        }
+    }
+}
+
+/// Read the current ALC enabled state (true = enabled).
+pub async fn alc_is_enabled<D: HidDevice>(dev: &D, chip: ChipVariant) -> io::Result<bool> {
+    match chip {
+        ChipVariant::PLP239 => {
+            let val = read_user_reg(dev, 0, 0x40).await?;
+            Ok(val & 0x02 != 0)
+        }
+        _ => Ok(true), // Assume enabled for chips we can't query
+    }
 }
 
 async fn read_frame_plp239<D: HidDevice>(
