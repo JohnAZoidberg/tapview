@@ -2,6 +2,14 @@
 
 A Linux touchpad visualizer. Shows multitouch contact points in real time using the kernel's MT Protocol B events. Useful for debugging touchpad behavior, testing palm rejection, and understanding how your touchpad reports touches.
 
+## Tested on
+
+| Hardware            | Raw Events | libinput | Heatmap |
+|---------------------|------------|----------|---------|
+| Framework Laptop 12 | Working    | Working  |         |
+| Framework Laptop 13 | Working    | Working  | Working |
+| Framework Laptop 16 | Working    | Working  | Working |
+
 ## What it does
 
 - Discovers your touchpad automatically via udev
