@@ -151,10 +151,13 @@ pub fn alc_reset(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<()> {
             // R_ALC_RESET_CTRL (Bank 9, 0x3A): bit[1] = reset gain + clear IIR
             write_reg(dev, 9, 0x3A, 0x02)
         }
-        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PJP255 | ChipVariant::PJP215 => {
-            // PJP chips: trigger ALC start via Set_Ana_Start (Bank 0, 0x06) bit[1]
-            let current = read_reg(dev, 0, 0x06)?;
-            write_reg(dev, 0, 0x06, current | 0x02)
+        ChipVariant::PJP274 | ChipVariant::PJP343 => {
+            // R_ALC_RESET_CTRL (Bank 2, 0x15): bit[1] = reset gain + clear IIR
+            write_reg(dev, 2, 0x15, 0x02)
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            // PJP255/215 use same DSP bank layout as PJP274
+            write_reg(dev, 2, 0x15, 0x02)
         }
     }
 }
@@ -167,9 +170,14 @@ pub fn alc_enable(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<()> {
             let current = read_user_reg(dev, 0, 0x40)?;
             write_user_reg(dev, 0, 0x40, current | 0x02)
         }
-        _ => {
-            eprintln!("alc_enable: not yet implemented for {}", chip);
-            Ok(())
+        ChipVariant::PJP274 | ChipVariant::PJP343 => {
+            // R_HW_SelfRun (Bank 6, 0x12): bit[1] = auto-trigger ALC from IIR ready
+            let current = read_reg(dev, 6, 0x12)?;
+            write_reg(dev, 6, 0x12, current | 0x02)
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            let current = read_reg(dev, 6, 0x12)?;
+            write_reg(dev, 6, 0x12, current | 0x02)
         }
     }
 }
@@ -182,9 +190,14 @@ pub fn alc_disable(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<()> {
             let current = read_user_reg(dev, 0, 0x40)?;
             write_user_reg(dev, 0, 0x40, current & !0x02)
         }
-        _ => {
-            eprintln!("alc_disable: not yet implemented for {}", chip);
-            Ok(())
+        ChipVariant::PJP274 | ChipVariant::PJP343 => {
+            // R_HW_SelfRun (Bank 6, 0x12): bit[1] = auto-trigger ALC
+            let current = read_reg(dev, 6, 0x12)?;
+            write_reg(dev, 6, 0x12, current & !0x02)
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            let current = read_reg(dev, 6, 0x12)?;
+            write_reg(dev, 6, 0x12, current & !0x02)
         }
     }
 }
@@ -196,7 +209,15 @@ pub fn alc_is_enabled(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<bool>
             let val = read_user_reg(dev, 0, 0x40)?;
             Ok(val & 0x02 != 0)
         }
-        _ => Ok(true), // Assume enabled for chips we can't query
+        ChipVariant::PJP274 | ChipVariant::PJP343 => {
+            // R_HW_SelfRun (Bank 6, 0x12): bit[1]
+            let val = read_reg(dev, 6, 0x12)?;
+            Ok(val & 0x02 != 0)
+        }
+        ChipVariant::PJP255 | ChipVariant::PJP215 => {
+            let val = read_reg(dev, 6, 0x12)?;
+            Ok(val & 0x02 != 0)
+        }
     }
 }
 
