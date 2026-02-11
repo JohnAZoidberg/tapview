@@ -44,6 +44,11 @@ sudo dnf install gcc pkg-config libxkbcommon-devel wayland-devel libX11-devel
 sudo apt install libxkbcommon-dev libwayland-dev libx11-dev
 ```
 
+**NixOS/Nix:**
+```
+nix develop
+```
+
 ### Runtime
 
 Requires read access to the touchpad's `/dev/input/event*` device. Typically this means running as root or being in the `input` group.
