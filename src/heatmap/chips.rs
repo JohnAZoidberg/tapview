@@ -1,5 +1,5 @@
-use super::hidraw::HidrawDevice;
 use super::protocol::{burst_read, read_reg, read_user_reg, write_reg};
+use super::HidDevice;
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +24,7 @@ impl std::fmt::Display for ChipVariant {
 }
 
 /// Read Part ID from Bank 0, regs 0x78 (low) and 0x79 (high).
-pub fn identify_chip(dev: &HidrawDevice) -> io::Result<ChipVariant> {
+pub fn identify_chip(dev: &dyn HidDevice) -> io::Result<ChipVariant> {
     let lo = read_reg(dev, 0, 0x78)? as u16;
     let hi = read_reg(dev, 0, 0x79)? as u16;
     let part_id = lo | (hi << 8);
@@ -43,7 +43,7 @@ pub fn identify_chip(dev: &HidrawDevice) -> io::Result<ChipVariant> {
 }
 
 /// Read matrix dimensions as (rows, cols) from chip-specific registers.
-pub fn read_matrix_dims(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<(usize, usize)> {
+pub fn read_matrix_dims(dev: &dyn HidDevice, chip: ChipVariant) -> io::Result<(usize, usize)> {
     match chip {
         ChipVariant::PJP274 | ChipVariant::PJP343 => {
             let rows = read_user_reg(dev, 0, 0x6E)? as usize;
@@ -67,7 +67,7 @@ pub fn read_matrix_dims(dev: &HidrawDevice, chip: ChipVariant) -> io::Result<(us
 
 /// Read one raw capacitive frame. Returns signed 16-bit values in row-major order.
 pub fn read_frame(
-    dev: &HidrawDevice,
+    dev: &dyn HidDevice,
     chip: ChipVariant,
     rows: usize,
     cols: usize,
@@ -93,7 +93,7 @@ pub fn read_frame(
 }
 
 fn read_frame_pjp274(
-    dev: &HidrawDevice,
+    dev: &dyn HidDevice,
     rows: usize,
     cols: usize,
     total_bytes: usize,
@@ -120,7 +120,7 @@ fn read_frame_pjp274(
 }
 
 fn read_frame_pjp255(
-    dev: &HidrawDevice,
+    dev: &dyn HidDevice,
     total_bytes: usize,
     burst_len: usize,
 ) -> io::Result<Vec<u8>> {
@@ -142,7 +142,7 @@ fn read_frame_pjp255(
 }
 
 fn read_frame_plp239(
-    dev: &HidrawDevice,
+    dev: &dyn HidDevice,
     total_bytes: usize,
     burst_len: usize,
 ) -> io::Result<Vec<u8>> {

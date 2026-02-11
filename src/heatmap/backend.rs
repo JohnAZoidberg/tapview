@@ -1,7 +1,7 @@
 use super::chips::{identify_chip, read_frame, read_matrix_dims, ChipVariant};
-use super::hidraw::HidrawDevice;
 use super::protocol::{read_reg, read_user_reg};
 use super::HeatmapFrame;
+use super::HidDevice;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -17,7 +17,7 @@ pub fn spawn_heatmap_thread(
     let path = hidraw_path.to_path_buf();
 
     thread::spawn(move || {
-        let dev = match HidrawDevice::open(&path) {
+        let dev: Box<dyn HidDevice> = match open_hid_device(&path) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("heatmap: failed to open {}: {}", path.display(), e);
@@ -25,65 +25,84 @@ pub fn spawn_heatmap_thread(
             }
         };
 
-        let chip = match identify_chip(&dev) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("heatmap: failed to identify chip: {}", e);
-                return;
-            }
-        };
-
-        let (rows, cols) = match read_matrix_dims(&dev, chip) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("heatmap: failed to read matrix dimensions: {}", e);
-                return;
-            }
-        };
-
-        eprintln!(
-            "heatmap: {} detected, {}x{} matrix, burst_len={}",
-            chip, rows, cols, burst_len
-        );
-
-        // Dump candidate dimension registers for unknown/new chips
-        if chip == ChipVariant::PJP343 {
-            probe_dimension_registers(&dev);
-        }
-
-        // Display cols can be overridden for stride debugging
-        let display_cols = cols_override.unwrap_or(cols);
-        if cols_override.is_some() {
-            eprintln!("heatmap: display cols overridden to {}", display_cols);
-        }
-
-        loop {
-            // Hardware read always uses register-derived dimensions
-            match read_frame(&dev, chip, rows, cols, burst_len) {
-                Ok(data) => {
-                    let display_rows = data.len() / display_cols;
-                    let frame = HeatmapFrame {
-                        rows: display_rows,
-                        cols: display_cols,
-                        data,
-                    };
-                    if tx.send(frame).is_err() {
-                        // Receiver dropped, UI closed
-                        break;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("heatmap: frame read error: {}", e);
-                    break;
-                }
-            }
-        }
+        run_heatmap_loop(&*dev, burst_len, cols_override, &tx);
     });
 
     rx
 }
 
-fn probe_dimension_registers(dev: &HidrawDevice) {
+#[cfg(target_os = "linux")]
+fn open_hid_device(path: &Path) -> std::io::Result<Box<dyn HidDevice>> {
+    Ok(Box::new(super::hidraw::HidrawDevice::open(path)?))
+}
+
+#[cfg(target_os = "windows")]
+fn open_hid_device(path: &Path) -> std::io::Result<Box<dyn HidDevice>> {
+    Ok(Box::new(super::windows_hid::WinHidDevice::open(path)?))
+}
+
+fn run_heatmap_loop(
+    dev: &dyn HidDevice,
+    burst_len: usize,
+    cols_override: Option<usize>,
+    tx: &mpsc::Sender<HeatmapFrame>,
+) {
+    let chip = match identify_chip(dev) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("heatmap: failed to identify chip: {}", e);
+            return;
+        }
+    };
+
+    let (rows, cols) = match read_matrix_dims(dev, chip) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("heatmap: failed to read matrix dimensions: {}", e);
+            return;
+        }
+    };
+
+    eprintln!(
+        "heatmap: {} detected, {}x{} matrix, burst_len={}",
+        chip, rows, cols, burst_len
+    );
+
+    // Dump candidate dimension registers for unknown/new chips
+    if chip == ChipVariant::PJP343 {
+        probe_dimension_registers(dev);
+    }
+
+    // Display cols can be overridden for stride debugging
+    let display_cols = cols_override.unwrap_or(cols);
+    if cols_override.is_some() {
+        eprintln!("heatmap: display cols overridden to {}", display_cols);
+    }
+
+    loop {
+        // Hardware read always uses register-derived dimensions
+        match read_frame(dev, chip, rows, cols, burst_len) {
+            Ok(data) => {
+                let display_rows = data.len() / display_cols;
+                let frame = HeatmapFrame {
+                    rows: display_rows,
+                    cols: display_cols,
+                    data,
+                };
+                if tx.send(frame).is_err() {
+                    // Receiver dropped, UI closed
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!("heatmap: frame read error: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+fn probe_dimension_registers(dev: &dyn HidDevice) {
     eprintln!("heatmap: --- PJP343 register probe ---");
 
     // PJP274 style: UserBank 0, 0x6E/0x6F

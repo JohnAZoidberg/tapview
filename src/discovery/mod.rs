@@ -1,4 +1,7 @@
+#[cfg(target_os = "linux")]
 pub mod udev_discovery;
+#[cfg(target_os = "windows")]
+pub mod windows_discovery;
 
 use std::path::PathBuf;
 

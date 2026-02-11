@@ -1,3 +1,4 @@
+use super::HidDevice;
 use std::fs::OpenOptions;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -43,9 +44,10 @@ impl HidrawDevice {
             fd: OwnedFd::from(file),
         })
     }
+}
 
-    /// Send a SetFeature report. `buf[0]` must be the report ID.
-    pub fn set_feature(&self, buf: &[u8]) -> io::Result<()> {
+impl HidDevice for HidrawDevice {
+    fn set_feature(&self, buf: &[u8]) -> io::Result<()> {
         let ret = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
@@ -60,9 +62,7 @@ impl HidrawDevice {
         }
     }
 
-    /// Send a GetFeature report. `buf[0]` must be set to the report ID before calling.
-    /// Returns the number of bytes actually read.
-    pub fn get_feature(&self, buf: &mut [u8]) -> io::Result<usize> {
+    fn get_feature(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ret = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),

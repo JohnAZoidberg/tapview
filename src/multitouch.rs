@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use evdev::{AbsoluteAxisType, EventType, InputEvent, Key};
 
 pub const MAX_TOUCH_POINTS: usize = 10;
@@ -10,6 +11,7 @@ pub struct ButtonState {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
 pub struct TouchData {
     pub used: bool,
     pub pressed: bool,
@@ -35,11 +37,13 @@ impl TouchData {
         *self = TouchData::default();
     }
 
+    #[cfg(target_os = "linux")]
     fn set_used(&mut self) {
         self.used = true;
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 enum MTState {
@@ -48,6 +52,7 @@ enum MTState {
     NeedsReset,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct MTStateMachine {
     state: MTState,
@@ -56,6 +61,7 @@ pub struct MTStateMachine {
     pub buttons: ButtonState,
 }
 
+#[cfg(target_os = "linux")]
 impl Default for MTStateMachine {
     fn default() -> Self {
         Self {
@@ -67,6 +73,7 @@ impl Default for MTStateMachine {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl MTStateMachine {
     pub fn new() -> Self {
         Self::default()
@@ -193,6 +200,7 @@ impl MTStateMachine {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn print_event(event: &InputEvent) {
     let type_name = match event.event_type() {
         EventType::KEY => "EV_KEY",
@@ -208,6 +216,7 @@ pub fn print_event(event: &InputEvent) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn code_lookup(code: u16) -> Option<&'static str> {
     match code {
         0x00 => Some("X"),
