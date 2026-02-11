@@ -33,8 +33,17 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
-      - name: Build
+      - name: Build (debug)
         run: cargo build
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Upload Linux executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: tapview-linux-x86_64
+          path: target/release/tapview
 
   check-windows:
     runs-on: windows-latest
@@ -54,5 +63,14 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
-      - name: Build
+      - name: Build (debug)
         run: cargo build
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: tapview-windows-x86_64
+          path: target/release/tapview.exe
