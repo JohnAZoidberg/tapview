@@ -1,7 +1,69 @@
-//! State from libinput events for visualization.
+//! State from libinput/interpreted input events for visualization.
 //! Values decay each frame so visualizations fade when idle.
+//!
+//! The event types are defined here (rather than in the backend modules) so
+//! they can be shared across Linux (libinput) and Windows (RawInput mouse)
+//! backends.
 
-use crate::libinput_backend::{LibinputEvent, ScrollSource};
+/// Structured input event data, safe to send across threads.
+/// On Linux these come from libinput; on Windows from RawInput mouse data.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum LibinputEvent {
+    PointerMotion {
+        dx: f64,
+        dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+    },
+    PointerButton {
+        button: u32,
+        pressed: bool,
+    },
+    Scroll {
+        source: ScrollSource,
+        vert: f64,
+        horiz: f64,
+    },
+    GestureSwipeBegin {
+        fingers: i32,
+    },
+    GestureSwipeUpdate {
+        fingers: i32,
+        dx: f64,
+        dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+    },
+    GestureSwipeEnd,
+    GesturePinchBegin {
+        fingers: i32,
+    },
+    GesturePinchUpdate {
+        fingers: i32,
+        dx: f64,
+        dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+        scale: f64,
+        angle: f64,
+    },
+    GesturePinchEnd,
+    GestureHoldBegin {
+        fingers: i32,
+    },
+    GestureHoldEnd {
+        cancelled: bool,
+    },
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum ScrollSource {
+    Wheel,
+    Finger,
+    Continuous,
+}
 
 const DECAY: f32 = 0.85;
 

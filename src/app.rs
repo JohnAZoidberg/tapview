@@ -1,7 +1,7 @@
 use crate::dimensions::Dimensions;
 use crate::heatmap::HeatmapFrame;
 use crate::input::TouchState;
-use crate::libinput_backend::LibinputEvent;
+use crate::libinput_state::LibinputEvent;
 use crate::libinput_state::LibinputState;
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use crate::render;
@@ -9,6 +9,7 @@ use std::sync::mpsc;
 
 const HISTORY_MAX: usize = 20;
 
+#[allow(dead_code)]
 pub enum GrabCommand {
     Grab,
     Ungrab,
@@ -16,6 +17,7 @@ pub enum GrabCommand {
 
 pub struct TapviewApp {
     touch_rx: mpsc::Receiver<TouchState>,
+    #[allow(dead_code)]
     grab_tx: mpsc::Sender<GrabCommand>,
     libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
     heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
@@ -26,6 +28,7 @@ pub struct TapviewApp {
     touch_history: Vec<[TouchData; MAX_TOUCH_POINTS]>,
     libinput: LibinputState,
     trails: usize,
+    #[allow(dead_code)]
     grabbed: bool,
 }
 
@@ -76,7 +79,8 @@ impl eframe::App for TapviewApp {
             }
         }
 
-        // Handle grab/ungrab keys
+        // Handle grab/ungrab keys (Linux only — Windows doesn't support touchpad grab)
+        #[cfg(target_os = "linux")]
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Enter) && !self.grabbed {
                 let _ = self.grab_tx.send(GrabCommand::Grab);
@@ -177,11 +181,14 @@ impl eframe::App for TapviewApp {
                     central_rect.min.y + self.dims.screen_height / 2.0,
                 );
 
+                #[cfg(target_os = "linux")]
                 let text = if self.grabbed {
                     "Press ESC to restore focus"
                 } else {
                     "Press ENTER to grab touchpad"
                 };
+                #[cfg(target_os = "windows")]
+                let text = "Touch the touchpad to visualize";
 
                 // Choose font size based on available space
                 let font_size = {

@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  check-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,5 +33,44 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
-      - name: Build
+      - name: Build (debug)
         run: cargo build
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Upload Linux executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: tapview-linux-x86_64
+          path: target/release/tapview
+
+  check-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Build (debug)
+        run: cargo build
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: tapview-windows-x86_64
+          path: target/release/tapview.exe

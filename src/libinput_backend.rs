@@ -1,5 +1,6 @@
 //! Libinput library backend for reading pointer, scroll, and gesture events.
 
+use crate::libinput_state::{LibinputEvent, ScrollSource};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 use std::sync::mpsc;
@@ -8,63 +9,6 @@ use std::thread;
 use input::event::gesture::{GestureEvent, GestureEventCoordinates, GesturePinchEventTrait};
 use input::event::pointer::{Axis, ButtonState, PointerEvent, PointerScrollEvent};
 use input::{Event, Libinput, LibinputInterface};
-
-/// Structured libinput event data, safe to send across threads.
-#[derive(Clone, Debug)]
-pub enum LibinputEvent {
-    PointerMotion {
-        dx: f64,
-        dy: f64,
-        dx_unaccel: f64,
-        dy_unaccel: f64,
-    },
-    PointerButton {
-        button: u32,
-        pressed: bool,
-    },
-    Scroll {
-        source: ScrollSource,
-        vert: f64,
-        horiz: f64,
-    },
-    GestureSwipeBegin {
-        fingers: i32,
-    },
-    GestureSwipeUpdate {
-        fingers: i32,
-        dx: f64,
-        dy: f64,
-        dx_unaccel: f64,
-        dy_unaccel: f64,
-    },
-    GestureSwipeEnd,
-    GesturePinchBegin {
-        fingers: i32,
-    },
-    GesturePinchUpdate {
-        fingers: i32,
-        dx: f64,
-        dy: f64,
-        dx_unaccel: f64,
-        dy_unaccel: f64,
-        scale: f64,
-        angle: f64,
-    },
-    GesturePinchEnd,
-    GestureHoldBegin {
-        fingers: i32,
-    },
-    GestureHoldEnd {
-        cancelled: bool,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub enum ScrollSource {
-    Wheel,
-    Finger,
-    Continuous,
-}
 
 struct Interface;
 

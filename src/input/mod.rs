@@ -1,4 +1,7 @@
+#[cfg(target_os = "linux")]
 pub mod evdev_backend;
+#[cfg(target_os = "windows")]
+pub mod windows_backend;
 
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use std::path::Path;
@@ -19,6 +22,7 @@ impl Default for TouchState {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum InputError {
     OpenFailed(String),
     GrabFailed(String),
