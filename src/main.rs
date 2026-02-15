@@ -52,7 +52,8 @@ struct Cli {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.heatmap = true;
     let trails = cli.trails.min(20);
 
     // Discover touchpad
