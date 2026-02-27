@@ -13,6 +13,7 @@ pub struct DeviceInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Internal/External used on Linux only
 pub enum Integration {
     Internal,
     External,
