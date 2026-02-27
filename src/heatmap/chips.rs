@@ -9,6 +9,7 @@ pub enum ChipVariant {
     PJP255,
     PJP215,
     PLP239,
+    PCT1036,
 }
 
 impl std::fmt::Display for ChipVariant {
@@ -19,6 +20,7 @@ impl std::fmt::Display for ChipVariant {
             ChipVariant::PJP255 => write!(f, "PJP255"),
             ChipVariant::PJP215 => write!(f, "PJP215"),
             ChipVariant::PLP239 => write!(f, "PLP239"),
+            ChipVariant::PCT1036 => write!(f, "PCT1036"),
         }
     }
 }
@@ -35,6 +37,7 @@ pub fn identify_chip(dev: &dyn HidDevice) -> io::Result<ChipVariant> {
         0x0255 => Ok(ChipVariant::PJP255),
         0x0215 => Ok(ChipVariant::PJP215),
         0x0239 => Ok(ChipVariant::PLP239),
+        0x0360 => Ok(ChipVariant::PCT1036),
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("Unknown PixArt chip Part ID: 0x{:04X}", part_id),
@@ -45,7 +48,7 @@ pub fn identify_chip(dev: &dyn HidDevice) -> io::Result<ChipVariant> {
 /// Read matrix dimensions as (rows, cols) from chip-specific registers.
 pub fn read_matrix_dims(dev: &dyn HidDevice, chip: ChipVariant) -> io::Result<(usize, usize)> {
     match chip {
-        ChipVariant::PJP274 | ChipVariant::PJP343 => {
+        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PCT1036 => {
             let rows = read_user_reg(dev, 0, 0x6E)? as usize;
             let cols = read_user_reg(dev, 0, 0x6F)? as usize;
             Ok((rows, cols))
@@ -76,7 +79,7 @@ pub fn read_frame(
     let total_bytes = rows * cols * 2;
 
     let raw = match chip {
-        ChipVariant::PJP274 | ChipVariant::PJP343 => {
+        ChipVariant::PJP274 | ChipVariant::PJP343 | ChipVariant::PCT1036 => {
             read_frame_pjp274(dev, rows, cols, total_bytes, burst_len)?
         }
         ChipVariant::PJP255 | ChipVariant::PJP215 => {
