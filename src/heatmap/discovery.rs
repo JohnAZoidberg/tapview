@@ -188,12 +188,42 @@ use windows::Win32::Storage::FileSystem::*;
 /// as the touchpad that supports Report ID 0x41 feature reports.
 #[cfg(target_os = "windows")]
 pub fn find_hid_device_for_heatmap(touchpad_path: &Path) -> io::Result<(PathBuf, usize)> {
-    let _ = touchpad_path; // We enumerate all HID devices instead of walking the device tree
-    unsafe { find_hid_device_for_heatmap_inner() }
+    let parent_id = extract_parent_device_id(touchpad_path);
+    unsafe { find_hid_device_for_heatmap_inner(parent_id.as_deref()) }
+}
+
+/// Extract the parent device identifier from a HID device path.
+/// Handles two formats:
+/// 1. USB HID: `\\?\hid#vid_1d50&pid_615e&mi_05&col02#8&1e66bad1&0&0001#{guid}`
+///    Returns: `vid_1d50&pid_615e`
+/// 2. Internal: `\\?\hid#pixa3854&col02#4&10d8260e&0&0001#{guid}`
+///    Returns: `pixa3854`
+#[cfg(target_os = "windows")]
+fn extract_parent_device_id(path: &Path) -> Option<String> {
+    let path_str = path.to_str()?.to_lowercase();
+
+    // Find the hardware ID portion after "hid#"
+    let hid_start = path_str.find("hid#")? + 4;
+    let after_hid = &path_str[hid_start..];
+
+    // The hardware ID ends at &col or # (whichever comes first)
+    let hw_id_end = after_hid
+        .find("&col")
+        .or_else(|| after_hid.find('#'))?;
+    let hw_id = &after_hid[..hw_id_end];
+
+    // For VID/PID format, extract just vid_XXXX&pid_YYYY (strip &mi_XX)
+    if let Some(mi_pos) = hw_id.find("&mi_") {
+        Some(hw_id[..mi_pos].to_string())
+    } else {
+        Some(hw_id.to_string())
+    }
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn find_hid_device_for_heatmap_inner() -> io::Result<(PathBuf, usize)> {
+unsafe fn find_hid_device_for_heatmap_inner(
+    parent_id: Option<&str>,
+) -> io::Result<(PathBuf, usize)> {
     let hid_guid = HidD_GetHidGuid();
 
     let dev_info = SetupDiGetClassDevsW(
@@ -219,7 +249,8 @@ unsafe fn find_hid_device_for_heatmap_inner() -> io::Result<(PathBuf, usize)> {
             break;
         }
 
-        if let Some(result) = check_hid_device_for_heatmap(dev_info, &mut interface_data) {
+        if let Some(result) = check_hid_device_for_heatmap(dev_info, &mut interface_data, parent_id)
+        {
             best_result = Some(result);
             break;
         }
@@ -241,6 +272,7 @@ unsafe fn find_hid_device_for_heatmap_inner() -> io::Result<(PathBuf, usize)> {
 unsafe fn check_hid_device_for_heatmap(
     dev_info: HDEVINFO,
     interface_data: &mut SP_DEVICE_INTERFACE_DATA,
+    parent_id: Option<&str>,
 ) -> Option<(PathBuf, usize)> {
     // Get device path
     let mut required_size = 0u32;
@@ -276,6 +308,14 @@ unsafe fn check_hid_device_for_heatmap(
 
     let device_path_ptr = &(*detail).DevicePath as *const u16;
     let device_path = pcwstr_to_string(device_path_ptr);
+
+    // If we have a parent_id filter, check if this device belongs to the same parent
+    if let Some(parent) = parent_id {
+        let candidate_parent = extract_parent_device_id(std::path::Path::new(&device_path));
+        if candidate_parent.as_deref() != Some(parent) {
+            return None;
+        }
+    }
 
     // Try to open with read/write access for feature reports
     let wide_path: Vec<u16> = device_path
