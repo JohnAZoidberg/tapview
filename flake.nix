@@ -61,7 +61,7 @@
           mkShell rec {
             buildInputs = [
               pkg-config
-              rust-bin.nightly.latest.default
+              rust-bin.stable.latest.default
               systemd
               libinput
             ] ++ runtimeLibs;
