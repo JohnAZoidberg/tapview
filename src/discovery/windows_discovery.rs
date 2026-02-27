@@ -1,4 +1,4 @@
-use super::{DeviceDiscovery, DeviceInfo, DiscoveryError};
+use super::{DeviceDiscovery, DeviceInfo, DiscoveryError, Integration};
 use std::path::PathBuf;
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::*;
@@ -135,6 +135,7 @@ unsafe fn get_touchpad_info(
     if is_touchpad {
         Some(DeviceInfo {
             devnode: PathBuf::from(&device_path),
+            integration: Integration::Unknown,
         })
     } else {
         None

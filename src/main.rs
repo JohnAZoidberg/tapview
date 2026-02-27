@@ -49,6 +49,14 @@ struct Cli {
     /// Override heatmap column count (for debugging stride issues)
     #[arg(long)]
     heatmap_cols: Option<usize>,
+
+    /// List detected touchpads and exit
+    #[arg(long)]
+    list: bool,
+
+    /// Use a specific device path instead of auto-detection
+    #[arg(long)]
+    device: Option<String>,
 }
 
 fn main() {
@@ -69,8 +77,26 @@ fn main() {
         }
     };
 
-    let device = &devices[0];
-    eprintln!("Found touchpad: {}", device.devnode.display());
+    if cli.list {
+        for (i, d) in devices.iter().enumerate() {
+            println!("{}: {}", i, d);
+        }
+        std::process::exit(0);
+    }
+
+    let device = if let Some(ref path) = cli.device {
+        let path = std::path::PathBuf::from(path);
+        match devices.iter().find(|d| d.devnode == path) {
+            Some(d) => d.clone(),
+            None => {
+                eprintln!("Device {} not found among detected touchpads. Use --list to see available devices.", path.display());
+                std::process::exit(1);
+            }
+        }
+    } else {
+        devices[0].clone()
+    };
+    eprintln!("Found touchpad: {}", device);
 
     // Create channels
     let (touch_tx, touch_rx) = mpsc::channel();
@@ -181,7 +207,7 @@ fn main() {
 
     // Optionally spawn heatmap backend thread
     let heatmap_rx = if cli.heatmap {
-        spawn_heatmap(device, cli.heatmap_cols)
+        spawn_heatmap(&device, cli.heatmap_cols)
     } else {
         None
     };

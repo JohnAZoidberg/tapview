@@ -8,6 +8,15 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub devnode: PathBuf,
+    /// Whether this is an internal (built-in) touchpad, external, or unknown.
+    pub integration: Integration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Integration {
+    Internal,
+    External,
+    Unknown,
 }
 
 #[derive(Debug)]
@@ -26,6 +35,17 @@ impl std::fmt::Display for DiscoveryError {
 }
 
 impl std::error::Error for DiscoveryError {}
+
+impl std::fmt::Display for DeviceInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self.integration {
+            Integration::Internal => " (internal)",
+            Integration::External => " (external)",
+            Integration::Unknown => "",
+        };
+        write!(f, "{}{}", self.devnode.display(), label)
+    }
+}
 
 pub trait DeviceDiscovery {
     fn find_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError>;
