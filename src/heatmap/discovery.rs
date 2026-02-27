@@ -207,9 +207,7 @@ fn extract_parent_device_id(path: &Path) -> Option<String> {
     let after_hid = &path_str[hid_start..];
 
     // The hardware ID ends at &col or # (whichever comes first)
-    let hw_id_end = after_hid
-        .find("&col")
-        .or_else(|| after_hid.find('#'))?;
+    let hw_id_end = after_hid.find("&col").or_else(|| after_hid.find('#'))?;
     let hw_id = &after_hid[..hw_id_end];
 
     // For VID/PID format, extract just vid_XXXX&pid_YYYY (strip &mi_XX)

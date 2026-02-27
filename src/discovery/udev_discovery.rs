@@ -28,21 +28,20 @@ impl DeviceDiscovery for UdevDiscovery {
             }
 
             if let Some(devnode) = device.devnode() {
-                let integration =
-                    match device.property_value("ID_INPUT_TOUCHPAD_INTEGRATION") {
-                        Some(v) if v == "internal" => Integration::Internal,
-                        Some(v) if v == "external" => Integration::External,
-                        _ => {
-                            // systemd's 70-touchpad.rules skips devices without ID_BUS
-                            // (e.g. I2C touchpads), so fall back to the bus type in the
-                            // sysfs path. I2C and SMBus touchpads are always built-in.
-                            if syspath.contains("/i2c-") || syspath.contains("/rmi4-") {
-                                Integration::Internal
-                            } else {
-                                Integration::Unknown
-                            }
+                let integration = match device.property_value("ID_INPUT_TOUCHPAD_INTEGRATION") {
+                    Some(v) if v == "internal" => Integration::Internal,
+                    Some(v) if v == "external" => Integration::External,
+                    _ => {
+                        // systemd's 70-touchpad.rules skips devices without ID_BUS
+                        // (e.g. I2C touchpads), so fall back to the bus type in the
+                        // sysfs path. I2C and SMBus touchpads are always built-in.
+                        if syspath.contains("/i2c-") || syspath.contains("/rmi4-") {
+                            Integration::Internal
+                        } else {
+                            Integration::Unknown
                         }
-                    };
+                    }
+                };
 
                 results.push(DeviceInfo {
                     devnode: PathBuf::from(devnode),
