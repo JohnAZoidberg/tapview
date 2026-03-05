@@ -10,7 +10,8 @@
       "Bash(tail:*)",
       "Bash(grep:*)",
       "Bash(nix develop:*)",
-      "Bash(nix build:*)"
+      "Bash(nix build:*)",
+      "WebFetch(domain:docs.microsoft.com)"
     ]
   }
 }

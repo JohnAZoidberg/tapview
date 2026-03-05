@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod dimensions;
 mod discovery;
 mod heatmap;
@@ -53,6 +54,14 @@ struct Cli {
     /// Disable raw capacitive heatmap
     #[arg(long)]
     no_heatmap: bool,
+
+    /// Force PTP configuration panel (exit if unavailable). Auto-enabled for compatible hardware.
+    #[arg(long, conflicts_with = "no_config")]
+    config: bool,
+
+    /// Disable PTP configuration panel
+    #[arg(long)]
+    no_config: bool,
 
     /// Override heatmap column count (for debugging stride issues)
     #[arg(long)]
@@ -220,8 +229,23 @@ fn main() {
         spawn_heatmap(&device, cli.heatmap_cols, cli.heatmap)
     };
 
+    // Discover PTP configuration features (auto-detected by default, forced with --config)
+    let ptp_config = if cli.no_config {
+        None
+    } else {
+        let cfg = config::discover(&device.devnode);
+        if cfg.is_none() && cli.config {
+            eprintln!("config: no PTP configuration features found");
+            std::process::exit(1);
+        }
+        cfg
+    };
+
     // Run eframe
-    let initial_width = if libinput_rx.is_some() { 1100.0 } else { 672.0 };
+    let mut initial_width = if libinput_rx.is_some() { 1100.0 } else { 672.0 };
+    if ptp_config.is_some() {
+        initial_width += 220.0;
+    }
     let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -241,6 +265,7 @@ fn main() {
                 grab_tx,
                 libinput_rx,
                 heatmap_rx,
+                ptp_config,
                 trails,
             )))
         }),
