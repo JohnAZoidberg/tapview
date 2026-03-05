@@ -38,13 +38,21 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Show interpreted input in a side panel (libinput on Linux, mouse/scroll on Windows)
-    #[arg(short, long)]
+    /// Force interpreted input panel (exit if unavailable). Auto-enabled by default.
+    #[arg(short, long, conflicts_with = "no_libinput")]
     libinput: bool,
 
-    /// Show raw capacitive heatmap (PixArt touchpads only)
+    /// Disable interpreted input panel
     #[arg(long)]
+    no_libinput: bool,
+
+    /// Force raw capacitive heatmap (exit if unavailable). Auto-enabled for compatible hardware.
+    #[arg(long, conflicts_with = "no_heatmap")]
     heatmap: bool,
+
+    /// Disable raw capacitive heatmap
+    #[arg(long)]
+    no_heatmap: bool,
 
     /// Override heatmap column count (for debugging stride issues)
     #[arg(long)]
@@ -190,31 +198,31 @@ fn main() {
         }
     });
 
-    // Optionally spawn libinput/interpreted input backend thread
+    // Spawn libinput/interpreted input backend thread (enabled by default)
     #[cfg(target_os = "linux")]
-    let libinput_rx = if cli.libinput {
+    let libinput_rx = if !cli.no_libinput {
         Some(libinput_backend::spawn_libinput_thread(&device.devnode))
     } else {
         None
     };
 
     #[cfg(target_os = "windows")]
-    let libinput_rx = if cli.libinput {
+    let libinput_rx = if !cli.no_libinput {
         Some(windows_input_backend::spawn_windows_input_thread())
     } else {
         None
     };
 
-    // Optionally spawn heatmap backend thread
-    let heatmap_rx = if cli.heatmap {
-        spawn_heatmap(&device, cli.heatmap_cols)
-    } else {
+    // Spawn heatmap backend thread (auto-detected by default, forced with --heatmap)
+    let heatmap_rx = if cli.no_heatmap {
         None
+    } else {
+        spawn_heatmap(&device, cli.heatmap_cols, cli.heatmap)
     };
 
     // Run eframe
-    let initial_width = if cli.libinput { 1100.0 } else { 672.0 };
-    let initial_height = if cli.heatmap { 650.0 } else { 432.0 };
+    let initial_width = if libinput_rx.is_some() { 1100.0 } else { 672.0 };
+    let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([initial_width, initial_height])
@@ -244,6 +252,7 @@ fn main() {
 fn spawn_heatmap(
     device: &discovery::DeviceInfo,
     heatmap_cols: Option<usize>,
+    force: bool,
 ) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
     match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
         Ok(hidraw_path) => {
@@ -258,14 +267,20 @@ fn spawn_heatmap(
                     ))
                 }
                 Err(e) => {
-                    eprintln!("heatmap: failed to determine burst length: {}", e);
-                    std::process::exit(1);
+                    if force {
+                        eprintln!("heatmap: failed to determine burst length: {}", e);
+                        std::process::exit(1);
+                    }
+                    None
                 }
             }
         }
         Err(e) => {
-            eprintln!("heatmap: failed to find sibling hidraw device: {}", e);
-            std::process::exit(1);
+            if force {
+                eprintln!("heatmap: failed to find sibling hidraw device: {}", e);
+                std::process::exit(1);
+            }
+            None
         }
     }
 }
@@ -274,6 +289,7 @@ fn spawn_heatmap(
 fn spawn_heatmap(
     device: &discovery::DeviceInfo,
     heatmap_cols: Option<usize>,
+    force: bool,
 ) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
     match heatmap::discovery::find_hid_device_for_heatmap(&device.devnode) {
         Ok((hid_path, burst_len)) => {
@@ -289,8 +305,11 @@ fn spawn_heatmap(
             ))
         }
         Err(e) => {
-            eprintln!("heatmap: {}", e);
-            std::process::exit(1);
+            if force {
+                eprintln!("heatmap: {}", e);
+                std::process::exit(1);
+            }
+            None
         }
     }
 }
