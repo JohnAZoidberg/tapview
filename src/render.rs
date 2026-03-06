@@ -1,3 +1,4 @@
+use crate::config::PtpConfig;
 use crate::heatmap::HeatmapFrame;
 use crate::libinput_state::{GestureKind, LibinputState};
 use crate::multitouch::{ButtonState, TouchData};
@@ -440,6 +441,145 @@ pub fn draw_libinput_panel(ui: &mut egui::Ui, state: &LibinputState) {
                 }
             });
     });
+}
+
+// --- config panel ---
+
+fn input_mode_label(mode: u8) -> &'static str {
+    match mode {
+        0 => "Mouse",
+        3 => "Precision Touchpad",
+        _ => "Unknown",
+    }
+}
+
+fn pad_type_label(pad_type: u8) -> &'static str {
+    match pad_type {
+        0 => "Click Pad",
+        1 => "Pressure Pad",
+        2 => "Discrete Pad",
+        _ => "Unknown",
+    }
+}
+
+/// Draw the PTP configuration panel contents.
+pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
+    ui.heading("Device Config");
+    ui.separator();
+
+    // --- Read-only info ---
+    if config.features.has_pad_type {
+        if let Some(pt) = config.pad_type {
+            ui.horizontal(|ui| {
+                ui.label("Pad Type:");
+                ui.strong(pad_type_label(pt));
+            });
+        }
+    }
+
+    if config.features.has_contact_count_max {
+        if let Some(max) = config.contact_count_max {
+            ui.horizontal(|ui| {
+                ui.label("Max Contacts:");
+                ui.strong(format!("{}", max));
+            });
+        }
+    }
+
+    if config.features.has_pad_type || config.features.has_contact_count_max {
+        ui.separator();
+    }
+
+    // --- Input Mode ---
+    if config.features.has_input_mode {
+        if let Some(mode) = config.input_mode {
+            if config.features.input_mode_writable {
+                let mut new_mode = mode;
+                egui::ComboBox::from_label("Input Mode")
+                    .selected_text(input_mode_label(mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut new_mode, 0, "Mouse");
+                        ui.selectable_value(&mut new_mode, 3, "Precision Touchpad");
+                    });
+                if new_mode != mode {
+                    if let Err(e) = config.set_input_mode(new_mode) {
+                        eprintln!("config: failed to set input mode: {}", e);
+                    }
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Input Mode:");
+                    ui.strong(input_mode_label(mode));
+                });
+            }
+        }
+    }
+
+    // --- Selective Reporting ---
+    if config.features.has_surface_switch || config.features.has_button_switch {
+        let mut surface = config.surface_switch.unwrap_or(true);
+        let mut button = config.button_switch.unwrap_or(true);
+        let surface_prev = surface;
+        let button_prev = button;
+
+        if config.features.has_surface_switch {
+            ui.add_enabled(
+                config.features.surface_switch_writable,
+                egui::Checkbox::new(&mut surface, "Surface Switch"),
+            );
+        }
+
+        if config.features.has_button_switch {
+            ui.add_enabled(
+                config.features.button_switch_writable,
+                egui::Checkbox::new(&mut button, "Button Switch"),
+            );
+        }
+
+        if surface != surface_prev || button != button_prev {
+            if let Err(e) = config.set_selective_reporting(surface, button) {
+                eprintln!("config: failed to set selective reporting: {}", e);
+            }
+        }
+    }
+
+    // --- Latency Mode ---
+    if config.features.has_latency_mode {
+        if let Some(mut high) = config.latency_mode {
+            let prev = high;
+            ui.add_enabled(
+                config.features.latency_mode_writable,
+                egui::Checkbox::new(&mut high, "Low Latency Mode"),
+            );
+            if high != prev {
+                if let Err(e) = config.set_latency_mode(high) {
+                    eprintln!("config: failed to set latency mode: {}", e);
+                }
+            }
+        }
+    }
+
+    // --- Button Press Threshold ---
+    if config.features.has_button_press_threshold {
+        if let Some(mut threshold) = config.button_press_threshold {
+            let prev = threshold;
+            ui.add_enabled(
+                config.features.button_press_threshold_writable,
+                egui::Slider::new(&mut threshold, 0..=255u8).text("Btn Threshold"),
+            );
+            if threshold != prev {
+                if let Err(e) = config.set_button_press_threshold(threshold) {
+                    eprintln!("config: failed to set button threshold: {}", e);
+                }
+            }
+        }
+    }
+
+    ui.separator();
+
+    if ui.button("Re-read").clicked() {
+        config.refresh();
+    }
 }
 
 // --- heatmap visualization ---
