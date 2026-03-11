@@ -1,3 +1,4 @@
+use crate::config::PtpConfig;
 use crate::dimensions::Dimensions;
 use crate::heatmap::HeatmapFrame;
 use crate::input::TouchState;
@@ -22,6 +23,7 @@ pub struct TapviewApp {
     libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
     heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
     heatmap_frame: Option<HeatmapFrame>,
+    ptp_config: Option<PtpConfig>,
     dims: Dimensions,
     current_touches: [TouchData; MAX_TOUCH_POINTS],
     buttons: ButtonState,
@@ -38,6 +40,7 @@ impl TapviewApp {
         grab_tx: mpsc::Sender<GrabCommand>,
         libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
         heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
+        ptp_config: Option<PtpConfig>,
         trails: usize,
     ) -> Self {
         Self {
@@ -46,6 +49,7 @@ impl TapviewApp {
             libinput_rx,
             heatmap_rx,
             heatmap_frame: None,
+            ptp_config,
             dims: Dimensions::default(),
             current_touches: [TouchData::default(); MAX_TOUCH_POINTS],
             buttons: ButtonState::default(),
@@ -97,6 +101,16 @@ impl eframe::App for TapviewApp {
                 self.dims
                     .maybe_grow_touchpad_extent(touch.position_x as f32, touch.position_y as f32);
             }
+        }
+
+        // Show config left panel if available
+        if let Some(config) = &mut self.ptp_config {
+            egui::SidePanel::left("config_panel")
+                .default_width(200.0)
+                .min_width(160.0)
+                .show(ctx, |ui| {
+                    render::draw_config_panel(ui, config);
+                });
         }
 
         // Show heatmap bottom panel if active

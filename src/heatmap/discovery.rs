@@ -199,7 +199,7 @@ pub fn find_hid_device_for_heatmap(touchpad_path: &Path) -> io::Result<(PathBuf,
 /// 2. Internal: `\\?\hid#pixa3854&col02#4&10d8260e&0&0001#{guid}`
 ///    Returns: `pixa3854`
 #[cfg(target_os = "windows")]
-fn extract_parent_device_id(path: &Path) -> Option<String> {
+pub(crate) fn extract_parent_device_id(path: &Path) -> Option<String> {
     let path_str = path.to_str()?.to_lowercase();
 
     // Find the hardware ID portion after "hid#"
@@ -386,7 +386,7 @@ unsafe fn check_hid_device_for_heatmap(
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn pcwstr_to_string(ptr: *const u16) -> String {
+pub(crate) unsafe fn pcwstr_to_string(ptr: *const u16) -> String {
     let mut len = 0;
     while *ptr.add(len) != 0 {
         len += 1;
