@@ -455,7 +455,7 @@ pub fn draw_libinput_panel(ui: &mut egui::Ui, state: &LibinputState) {
 
 // --- config panel ---
 
-fn input_mode_label(mode: u8) -> &'static str {
+pub fn input_mode_label(mode: u8) -> &'static str {
     match mode {
         0 => "Mouse",
         3 => "Precision Touchpad",
@@ -463,7 +463,7 @@ fn input_mode_label(mode: u8) -> &'static str {
     }
 }
 
-fn pad_type_label(pad_type: u8) -> &'static str {
+pub fn pad_type_label(pad_type: u8) -> &'static str {
     match pad_type {
         0 => "Click Pad",
         1 => "Pressure Pad",
