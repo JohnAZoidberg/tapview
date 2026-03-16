@@ -486,7 +486,17 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
         }
     }
 
-    if config.features.has_pad_type || config.features.has_contact_count_max {
+    if let Some(phys) = &config.physical_size {
+        ui.horizontal(|ui| {
+            ui.label("Physical Size:");
+            ui.strong(format!("{:.1} x {:.1} mm", phys.width_mm, phys.height_mm));
+        });
+    }
+
+    if config.features.has_pad_type
+        || config.features.has_contact_count_max
+        || config.physical_size.is_some()
+    {
         ui.separator();
     }
 

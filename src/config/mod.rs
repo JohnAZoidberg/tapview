@@ -6,6 +6,12 @@ mod windows;
 use std::io;
 use std::path::Path;
 
+/// Physical dimensions of the touchpad surface, extracted from the HID descriptor.
+pub struct TouchpadPhysicalSize {
+    pub width_mm: f64,
+    pub height_mm: f64,
+}
+
 /// Which PTP configuration features the device supports.
 pub struct PtpFeatures {
     pub has_input_mode: bool,
@@ -54,6 +60,7 @@ pub struct PtpConfig {
     pub pad_type: Option<u8>,
     pub latency_mode: Option<bool>,
     pub button_press_threshold: Option<u8>,
+    pub physical_size: Option<TouchpadPhysicalSize>,
     backend: Box<dyn ConfigBackend>,
 }
 

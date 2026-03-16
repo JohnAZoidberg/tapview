@@ -1,4 +1,4 @@
-use super::{ConfigBackend, ConfigValues, PtpConfig, PtpFeatures};
+use super::{ConfigBackend, ConfigValues, PtpConfig, PtpFeatures, TouchpadPhysicalSize};
 use crate::heatmap::discovery::find_sibling_hidraw;
 use crate::heatmap::hidraw::HidrawDevice;
 use crate::heatmap::HidDevice;
@@ -311,6 +311,120 @@ fn read_signed(data: &[u8], size: usize) -> i32 {
     }
 }
 
+// ── Physical size parser ──────────────────────────────────────────────────────
+
+const GENERIC_DESKTOP_PAGE: u16 = 0x0001;
+const USAGE_X: u16 = 0x0030;
+const USAGE_Y: u16 = 0x0031;
+
+/// Decode a HID Unit Exponent value (4-bit signed nibble).
+fn decode_unit_exponent(raw: i32) -> i32 {
+    let nibble = raw & 0x0F;
+    if nibble > 7 {
+        nibble - 16
+    } else {
+        nibble
+    }
+}
+
+/// Convert a physical range with unit info into millimeters.
+fn physical_range_mm(phys_min: i32, phys_max: i32, unit: u32, unit_exp_raw: i32) -> Option<f64> {
+    let range = (phys_max - phys_min) as f64;
+    if range <= 0.0 {
+        return None;
+    }
+    let exp = decode_unit_exponent(unit_exp_raw);
+    let system = unit & 0x0F;
+    match system {
+        1 | 2 => Some(range * 10f64.powi(exp) * 10.0),  // SI: cm → mm
+        3 | 4 => Some(range * 10f64.powi(exp) * 25.4),  // English: inch → mm
+        _ => None,
+    }
+}
+
+/// Parse HID report descriptor to extract the physical touchpad dimensions.
+/// Looks for X and Y usages (Generic Desktop page) in Input items and reads
+/// their Physical Minimum/Maximum, Unit, and Unit Exponent global state.
+fn parse_touchpad_physical_size(desc: &[u8]) -> Option<TouchpadPhysicalSize> {
+    let mut usage_page: u16 = 0;
+    let mut physical_min: i32 = 0;
+    let mut physical_max: i32 = 0;
+    let mut unit: u32 = 0;
+    let mut unit_exponent: i32 = 0;
+    let mut usages: Vec<u16> = Vec::new();
+
+    let mut width_mm: Option<f64> = None;
+    let mut height_mm: Option<f64> = None;
+
+    let mut i = 0;
+    while i < desc.len() {
+        let prefix = desc[i];
+
+        if prefix == 0xFE {
+            if i + 2 >= desc.len() {
+                break;
+            }
+            let data_size = desc[i + 1] as usize;
+            i += 3 + data_size;
+            continue;
+        }
+
+        let size = match prefix & 0x03 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 => 4,
+            _ => unreachable!(),
+        };
+
+        if i + 1 + size > desc.len() {
+            break;
+        }
+
+        let tag = prefix & 0xFC;
+        let data = &desc[i + 1..i + 1 + size];
+
+        match tag {
+            0x04 => usage_page = read_unsigned(data, size) as u16,
+            0x08 => usages.push(read_unsigned(data, size) as u16),
+            0x34 => physical_min = read_signed(data, size),
+            0x44 => physical_max = read_signed(data, size),
+            0x54 => unit_exponent = read_signed(data, size),
+            0x64 => unit = read_unsigned(data, size),
+            // Input (Main) — check for X/Y on Generic Desktop page
+            0x80 => {
+                if usage_page == GENERIC_DESKTOP_PAGE {
+                    for &u in &usages {
+                        if u == USAGE_X && width_mm.is_none() {
+                            width_mm =
+                                physical_range_mm(physical_min, physical_max, unit, unit_exponent);
+                        } else if u == USAGE_Y && height_mm.is_none() {
+                            height_mm =
+                                physical_range_mm(physical_min, physical_max, unit, unit_exponent);
+                        }
+                    }
+                }
+                usages.clear();
+            }
+            // Other Main items — clear local state
+            0x90 | 0xA0 | 0xB0 | 0xC0 => {
+                usages.clear();
+            }
+            _ => {}
+        }
+
+        i += 1 + size;
+    }
+
+    match (width_mm, height_mm) {
+        (Some(w), Some(h)) => Some(TouchpadPhysicalSize {
+            width_mm: w,
+            height_mm: h,
+        }),
+        _ => None,
+    }
+}
+
 // ── Discovery ─────────────────────────────────────────────────────────────────
 
 pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
@@ -333,6 +447,7 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
     };
 
     let (fields, report_sizes) = parse_ptp_features(&desc);
+    let physical_size = parse_touchpad_physical_size(&desc);
 
     if fields.is_empty() {
         return None;
@@ -382,6 +497,7 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
         pad_type: values.pad_type,
         latency_mode: values.latency_mode,
         button_press_threshold: values.button_press_threshold,
+        physical_size,
         backend: Box::new(backend),
     };
     config.probe_writable();
@@ -467,6 +583,88 @@ mod tests {
 
         // Report size for report_id=3: (2+1+1) bits = 4 bits = 1 byte
         assert_eq!(sizes[&3], 1);
+    }
+
+    #[test]
+    fn test_parse_touchpad_physical_size() {
+        // Descriptor fragment with X and Y Input items including physical size.
+        // X: Physical Min 0, Physical Max 1046, Unit Exponent -2, Unit 0x11 (cm)
+        //    → 1046 * 10^(-2) cm = 10.46 cm = 104.6 mm
+        // Y: Physical Min 0, Physical Max 672, same unit
+        //    → 672 * 10^(-2) cm = 6.72 cm = 67.2 mm
+        let desc: Vec<u8> = vec![
+            0x05, 0x0D, // Usage Page (Digitizer)
+            0x09, 0x05, // Usage (Touch Pad)
+            0xA1, 0x01, // Collection (Application)
+            0x85, 0x01, //   Report ID (1)
+            0x09, 0x22, //   Usage (Finger)
+            0xA1, 0x02, //   Collection (Logical)
+            0x05, 0x01, //     Usage Page (Generic Desktop)
+            0x09, 0x30, //     Usage (X)
+            0x35, 0x00, //     Physical Minimum (0)
+            0x46, 0x16, 0x04, // Physical Maximum (1046)
+            0x55, 0x0E, //     Unit Exponent (-2)
+            0x65, 0x11, //     Unit (cm)
+            0x15, 0x00, //     Logical Minimum (0)
+            0x26, 0xFF, 0x0F, // Logical Maximum (4095)
+            0x75, 0x10, //     Report Size (16)
+            0x95, 0x01, //     Report Count (1)
+            0x81, 0x02, //     Input (Data,Var,Abs)
+            0x09, 0x31, //     Usage (Y)
+            0x46, 0xA0, 0x02, // Physical Maximum (672)
+            0x26, 0xFF, 0x0F, // Logical Maximum (4095)
+            0x81, 0x02, //     Input (Data,Var,Abs)
+            0xC0, //   End Collection
+            0xC0, // End Collection
+        ];
+
+        let phys = parse_touchpad_physical_size(&desc).unwrap();
+        assert!((phys.width_mm - 104.6).abs() < 0.01);
+        assert!((phys.height_mm - 67.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_physical_size_inches() {
+        // X: Physical Max 400, Unit Exponent -2, Unit 0x13 (inch)
+        //    → 400 * 10^(-2) inch = 4.0 inch = 101.6 mm
+        // Y: Physical Max 250
+        //    → 250 * 10^(-2) inch = 2.5 inch = 63.5 mm
+        let desc: Vec<u8> = vec![
+            0x05, 0x01, // Usage Page (Generic Desktop)
+            0x09, 0x30, // Usage (X)
+            0x35, 0x00, // Physical Minimum (0)
+            0x46, 0x90, 0x01, // Physical Maximum (400)
+            0x55, 0x0E, // Unit Exponent (-2)
+            0x65, 0x13, // Unit (inch)
+            0x15, 0x00, // Logical Minimum (0)
+            0x26, 0xFF, 0x0F, // Logical Maximum (4095)
+            0x75, 0x10, // Report Size (16)
+            0x95, 0x01, // Report Count (1)
+            0x81, 0x02, // Input (Data,Var,Abs)
+            0x09, 0x31, // Usage (Y)
+            0x46, 0xFA, 0x00, // Physical Maximum (250)
+            0x81, 0x02, // Input (Data,Var,Abs)
+        ];
+
+        let phys = parse_touchpad_physical_size(&desc).unwrap();
+        assert!((phys.width_mm - 101.6).abs() < 0.01);
+        assert!((phys.height_mm - 63.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_physical_size_missing() {
+        // Descriptor with no physical info (unit = 0)
+        let desc: Vec<u8> = vec![
+            0x05, 0x01, // Usage Page (Generic Desktop)
+            0x09, 0x30, // Usage (X)
+            0x15, 0x00, // Logical Minimum (0)
+            0x25, 0x7F, // Logical Maximum (127)
+            0x75, 0x08, // Report Size (8)
+            0x95, 0x01, // Report Count (1)
+            0x81, 0x02, // Input (Data,Var,Abs)
+        ];
+
+        assert!(parse_touchpad_physical_size(&desc).is_none());
     }
 
     #[test]

@@ -429,6 +429,7 @@ unsafe fn check_hid_device_for_config(
         pad_type: values.pad_type,
         latency_mode: values.latency_mode,
         button_press_threshold: values.button_press_threshold,
+        physical_size: None,
         backend: Box::new(backend),
     };
     config.probe_writable();
