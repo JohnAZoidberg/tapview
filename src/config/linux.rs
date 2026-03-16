@@ -1,4 +1,6 @@
-use super::{ConfigBackend, ConfigValues, PtpConfig, PtpFeatures, TouchpadPhysicalSize};
+use super::{
+    AxisPhysicalInfo, ConfigBackend, ConfigValues, PtpConfig, PtpFeatures, TouchpadPhysicalSize,
+};
 use crate::heatmap::discovery::find_sibling_hidraw;
 use crate::heatmap::hidraw::HidrawDevice;
 use crate::heatmap::HidDevice;
@@ -342,19 +344,47 @@ fn physical_range_mm(phys_min: i32, phys_max: i32, unit: u32, unit_exp_raw: i32)
     }
 }
 
+/// Build an `AxisPhysicalInfo` from the current HID global state.
+fn make_axis_info(
+    logical_min: i32,
+    logical_max: i32,
+    physical_min: i32,
+    physical_max: i32,
+    unit: u32,
+    unit_exp_raw: i32,
+) -> Option<AxisPhysicalInfo> {
+    let size_mm = physical_range_mm(physical_min, physical_max, unit, unit_exp_raw)?;
+    let logical_range = (logical_max - logical_min) as f64;
+    let resolution = if size_mm > 0.0 {
+        logical_range / size_mm
+    } else {
+        0.0
+    };
+    Some(AxisPhysicalInfo {
+        logical_min,
+        logical_max,
+        physical_min,
+        physical_max,
+        size_mm,
+        resolution,
+    })
+}
+
 /// Parse HID report descriptor to extract the physical touchpad dimensions.
 /// Looks for X and Y usages (Generic Desktop page) in Input items and reads
 /// their Physical Minimum/Maximum, Unit, and Unit Exponent global state.
 fn parse_touchpad_physical_size(desc: &[u8]) -> Option<TouchpadPhysicalSize> {
     let mut usage_page: u16 = 0;
+    let mut logical_min: i32 = 0;
+    let mut logical_max: i32 = 0;
     let mut physical_min: i32 = 0;
     let mut physical_max: i32 = 0;
     let mut unit: u32 = 0;
     let mut unit_exponent: i32 = 0;
     let mut usages: Vec<u16> = Vec::new();
 
-    let mut width_mm: Option<f64> = None;
-    let mut height_mm: Option<f64> = None;
+    let mut x_info: Option<AxisPhysicalInfo> = None;
+    let mut y_info: Option<AxisPhysicalInfo> = None;
 
     let mut i = 0;
     while i < desc.len() {
@@ -387,6 +417,8 @@ fn parse_touchpad_physical_size(desc: &[u8]) -> Option<TouchpadPhysicalSize> {
         match tag {
             0x04 => usage_page = read_unsigned(data, size) as u16,
             0x08 => usages.push(read_unsigned(data, size) as u16),
+            0x14 => logical_min = read_signed(data, size),
+            0x24 => logical_max = read_signed(data, size),
             0x34 => physical_min = read_signed(data, size),
             0x44 => physical_max = read_signed(data, size),
             0x54 => unit_exponent = read_signed(data, size),
@@ -395,12 +427,24 @@ fn parse_touchpad_physical_size(desc: &[u8]) -> Option<TouchpadPhysicalSize> {
             0x80 => {
                 if usage_page == GENERIC_DESKTOP_PAGE {
                     for &u in &usages {
-                        if u == USAGE_X && width_mm.is_none() {
-                            width_mm =
-                                physical_range_mm(physical_min, physical_max, unit, unit_exponent);
-                        } else if u == USAGE_Y && height_mm.is_none() {
-                            height_mm =
-                                physical_range_mm(physical_min, physical_max, unit, unit_exponent);
+                        if u == USAGE_X && x_info.is_none() {
+                            x_info = make_axis_info(
+                                logical_min,
+                                logical_max,
+                                physical_min,
+                                physical_max,
+                                unit,
+                                unit_exponent,
+                            );
+                        } else if u == USAGE_Y && y_info.is_none() {
+                            y_info = make_axis_info(
+                                logical_min,
+                                logical_max,
+                                physical_min,
+                                physical_max,
+                                unit,
+                                unit_exponent,
+                            );
                         }
                     }
                 }
@@ -416,11 +460,8 @@ fn parse_touchpad_physical_size(desc: &[u8]) -> Option<TouchpadPhysicalSize> {
         i += 1 + size;
     }
 
-    match (width_mm, height_mm) {
-        (Some(w), Some(h)) => Some(TouchpadPhysicalSize {
-            width_mm: w,
-            height_mm: h,
-        }),
+    match (x_info, y_info) {
+        (Some(x), Some(y)) => Some(TouchpadPhysicalSize { x, y }),
         _ => None,
     }
 }
@@ -619,8 +660,21 @@ mod tests {
         ];
 
         let phys = parse_touchpad_physical_size(&desc).unwrap();
-        assert!((phys.width_mm - 104.6).abs() < 0.01);
-        assert!((phys.height_mm - 67.2).abs() < 0.01);
+        assert!((phys.x.size_mm - 104.6).abs() < 0.01);
+        assert!((phys.y.size_mm - 67.2).abs() < 0.01);
+        // Logical ranges
+        assert_eq!(phys.x.logical_min, 0);
+        assert_eq!(phys.x.logical_max, 4095);
+        assert_eq!(phys.y.logical_min, 0);
+        assert_eq!(phys.y.logical_max, 4095);
+        // Physical ranges
+        assert_eq!(phys.x.physical_min, 0);
+        assert_eq!(phys.x.physical_max, 1046);
+        assert_eq!(phys.y.physical_min, 0);
+        assert_eq!(phys.y.physical_max, 672);
+        // Resolution: 4095 / 104.6 ≈ 39.15, 4095 / 67.2 ≈ 60.94
+        assert!((phys.x.resolution - 39.15).abs() < 0.1);
+        assert!((phys.y.resolution - 60.94).abs() < 0.1);
     }
 
     #[test]
@@ -647,8 +701,8 @@ mod tests {
         ];
 
         let phys = parse_touchpad_physical_size(&desc).unwrap();
-        assert!((phys.width_mm - 101.6).abs() < 0.01);
-        assert!((phys.height_mm - 63.5).abs() < 0.01);
+        assert!((phys.x.size_mm - 101.6).abs() < 0.01);
+        assert!((phys.y.size_mm - 63.5).abs() < 0.01);
     }
 
     #[test]

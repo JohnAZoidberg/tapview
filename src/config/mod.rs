@@ -6,10 +6,20 @@ mod windows;
 use std::io;
 use std::path::Path;
 
+/// Per-axis range and physical size from the HID descriptor.
+pub struct AxisPhysicalInfo {
+    pub logical_min: i32,
+    pub logical_max: i32,
+    pub physical_min: i32,
+    pub physical_max: i32,
+    pub size_mm: f64,
+    pub resolution: f64, // logical units per mm
+}
+
 /// Physical dimensions of the touchpad surface, extracted from the HID descriptor.
 pub struct TouchpadPhysicalSize {
-    pub width_mm: f64,
-    pub height_mm: f64,
+    pub x: AxisPhysicalInfo,
+    pub y: AxisPhysicalInfo,
 }
 
 /// Which PTP configuration features the device supports.

@@ -489,7 +489,29 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
     if let Some(phys) = &config.physical_size {
         ui.horizontal(|ui| {
             ui.label("Physical Size:");
-            ui.strong(format!("{:.1} x {:.1} mm", phys.width_mm, phys.height_mm));
+            ui.strong(format!("{:.1} x {:.1} mm", phys.x.size_mm, phys.y.size_mm));
+        });
+        ui.horizontal(|ui| {
+            ui.label("X:");
+            ui.strong(format!(
+                "{}..{} -> {}..{} ({:.1}/mm)",
+                phys.x.logical_min,
+                phys.x.logical_max,
+                phys.x.physical_min,
+                phys.x.physical_max,
+                phys.x.resolution,
+            ));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Y:");
+            ui.strong(format!(
+                "{}..{} -> {}..{} ({:.1}/mm)",
+                phys.y.logical_min,
+                phys.y.logical_max,
+                phys.y.physical_min,
+                phys.y.physical_max,
+                phys.y.resolution,
+            ));
         });
     }
 
