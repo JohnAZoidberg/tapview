@@ -92,6 +92,16 @@ pub fn draw_touch(
         FontId::monospace(40.0 * cscale),
         Color32::BLACK,
     );
+
+    // Coordinate label
+    let coord_pos = Pos2::new(pos.x, pos.y + 40.0 * cscale);
+    painter.text(
+        coord_pos,
+        egui::Align2::CENTER_TOP,
+        format!("{},{}", touch.position_x, touch.position_y),
+        FontId::monospace(12.0 * cscale),
+        Color32::DARK_GRAY,
+    );
 }
 
 pub fn draw_button_indicators(
