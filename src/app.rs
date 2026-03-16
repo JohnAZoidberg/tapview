@@ -49,8 +49,8 @@ impl TapviewApp {
             libinput_rx,
             heatmap_rx,
             heatmap_frame: None,
+            dims: Dimensions::from_config(&ptp_config),
             ptp_config,
-            dims: Dimensions::default(),
             current_touches: [TouchData::default(); MAX_TOUCH_POINTS],
             buttons: ButtonState::default(),
             touch_history: vec![[TouchData::default(); MAX_TOUCH_POINTS]; HISTORY_MAX],
@@ -95,11 +95,16 @@ impl eframe::App for TapviewApp {
             }
         });
 
-        // Grow touchpad extents from current touches
-        for touch in &self.current_touches {
-            if touch.used {
-                self.dims
-                    .maybe_grow_touchpad_extent(touch.position_x as f32, touch.position_y as f32);
+        // Grow touchpad extents from current touches (only when the
+        // descriptor didn't provide a logical range).
+        if !self.dims.extent_known {
+            for touch in &self.current_touches {
+                if touch.used {
+                    self.dims.maybe_grow_touchpad_extent(
+                        touch.position_x as f32,
+                        touch.position_y as f32,
+                    );
+                }
             }
         }
 
