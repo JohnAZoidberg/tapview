@@ -1,7 +1,22 @@
 use super::{InputBackend, InputError, TouchState};
 use crate::multitouch::{self, MTStateMachine};
-use evdev::Device;
+use evdev::{AbsoluteAxisType, Device};
 use std::path::Path;
+
+/// Read ABS_MT_POSITION_X/Y axis extents from evdev absinfo.
+/// Returns (x_max, y_max).  The kernel applies any axis swaps before
+/// exposing the evdev device, so these always match the event coordinates.
+pub fn read_axis_extents(device_path: &Path) -> Option<(i32, i32)> {
+    let device = Device::open(device_path).ok()?;
+    let abs = device.get_abs_state().ok()?;
+    let x = abs[AbsoluteAxisType::ABS_MT_POSITION_X.0 as usize];
+    let y = abs[AbsoluteAxisType::ABS_MT_POSITION_Y.0 as usize];
+    if x.maximum > 0 && y.maximum > 0 {
+        Some((x.maximum, y.maximum))
+    } else {
+        None
+    }
+}
 
 pub struct EvdevBackend {
     device: Device,

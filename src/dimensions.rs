@@ -1,4 +1,3 @@
-use crate::config::PtpConfig;
 use egui::Pos2;
 
 pub struct Dimensions {
@@ -7,7 +6,7 @@ pub struct Dimensions {
     pub screen_width: f32,
     pub screen_height: f32,
     pub margin: f32,
-    /// True when extents came from the descriptor's logical range.
+    /// True when extents came from evdev absinfo.
     pub extent_known: bool,
 }
 
@@ -25,14 +24,14 @@ impl Default for Dimensions {
 }
 
 impl Dimensions {
-    pub fn from_config(config: &Option<PtpConfig>) -> Self {
+    /// Build dimensions from evdev axis extents (x_max, y_max).
+    /// These reflect the kernel's post-swap coordinate space.
+    pub fn from_extents(extents: Option<(i32, i32)>) -> Self {
         let mut dims = Self::default();
-        if let Some(cfg) = config {
-            if let Some(phys) = &cfg.physical_size {
-                dims.touchpad_max_extent_x = phys.x.logical_max as f32;
-                dims.touchpad_max_extent_y = phys.y.logical_max as f32;
-                dims.extent_known = true;
-            }
+        if let Some((x_max, y_max)) = extents {
+            dims.touchpad_max_extent_x = x_max as f32;
+            dims.touchpad_max_extent_y = y_max as f32;
+            dims.extent_known = true;
         }
         dims
     }

@@ -41,6 +41,7 @@ impl TapviewApp {
         libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
         heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
         ptp_config: Option<PtpConfig>,
+        evdev_extents: Option<(i32, i32)>,
         trails: usize,
     ) -> Self {
         Self {
@@ -49,7 +50,7 @@ impl TapviewApp {
             libinput_rx,
             heatmap_rx,
             heatmap_frame: None,
-            dims: Dimensions::from_config(&ptp_config),
+            dims: Dimensions::from_extents(evdev_extents),
             ptp_config,
             current_touches: [TouchData::default(); MAX_TOUCH_POINTS],
             buttons: ButtonState::default(),

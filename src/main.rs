@@ -229,6 +229,12 @@ fn main() {
         spawn_heatmap(&device, cli.heatmap_cols, cli.heatmap)
     };
 
+    // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
+    #[cfg(target_os = "linux")]
+    let evdev_extents = input::evdev_backend::read_axis_extents(&device.devnode);
+    #[cfg(target_os = "windows")]
+    let evdev_extents = None;
+
     // Discover PTP configuration features (auto-detected by default, forced with --config)
     let ptp_config = if cli.no_config {
         None
@@ -266,6 +272,7 @@ fn main() {
                 libinput_rx,
                 heatmap_rx,
                 ptp_config,
+                evdev_extents,
                 trails,
             )))
         }),
