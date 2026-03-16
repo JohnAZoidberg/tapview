@@ -247,6 +247,29 @@ fn main() {
         cfg
     };
 
+    // Log and compare axis ranges from both sources
+    if let Some((ex, ey)) = &evdev_extents {
+        eprintln!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
+    }
+    if let Some(cfg) = &ptp_config {
+        if let Some(phys) = &cfg.physical_size {
+            eprintln!(
+                "axis: HID descriptor: x={}..{}, y={}..{}",
+                phys.x.logical_min, phys.x.logical_max, phys.y.logical_min, phys.y.logical_max
+            );
+            if let Some((ex, ey)) = &evdev_extents {
+                if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
+                    eprintln!(
+                        "axis: evdev and HID descriptor disagree!"
+                    );
+                    if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
+                        eprintln!("axis: looks like a kernel axis swap");
+                    }
+                }
+            }
+        }
+    }
+
     // Run eframe
     let mut initial_width = if libinput_rx.is_some() { 1100.0 } else { 672.0 };
     if ptp_config.is_some() {
