@@ -3,6 +3,7 @@ pub mod discovery;
 pub mod heatmap;
 pub mod input;
 pub mod multitouch;
+pub mod recording;
 
 // Re-export commonly used types
 pub use discovery::{DeviceDiscovery, DeviceInfo, DiscoveryError};

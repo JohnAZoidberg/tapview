@@ -103,6 +103,8 @@ sudo ./target/release/tapview [OPTIONS]
 | `-t, --trails <N>` | Number of trail frames to show (default: 20, max: 20) |
 | `-v, --verbose` | Print raw kernel multitouch events to stderr |
 | `-l, --libinput` | Show libinput pointer/scroll/gesture data in a right side panel |
+| `--record <path>` | Record touch session to a binary file |
+| `--play <path>` | Play back a recorded touch session (no device needed) |
 | `-h, --help` | Show help |
 
 ### Controls
@@ -111,6 +113,8 @@ sudo ./target/release/tapview [OPTIONS]
 |-----|--------|
 | Enter | Grab touchpad (exclusive access, system cursor stops moving) |
 | Escape | Release grab |
+| Space | Play/pause (playback mode) |
+| Left/Right | Step -/+100ms (playback mode) |
 
 ### Examples
 
@@ -126,6 +130,20 @@ sudo ./target/release/tapview --verbose
 
 # Compare raw events with libinput interpretation
 sudo ./target/release/tapview --libinput
+
+# Record a touch session
+sudo ./target/release/tapview --record /tmp/session.tapv
+
+# Play it back (no device/sudo needed)
+./target/release/tapview --play /tmp/session.tapv
+```
+
+#### Incremental builds with Nix
+
+Build as your user, then run the binary with sudo:
+
+```
+nix develop -c cargo build && nix develop -c bash -c 'sudo env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ./target/debug/tapview --record /tmp/test.tapv'
 ```
 
 ## Architecture

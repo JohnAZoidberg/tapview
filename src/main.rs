@@ -8,6 +8,7 @@ mod input;
 mod libinput_backend;
 mod libinput_state;
 mod multitouch;
+mod recording;
 mod render;
 #[cfg(target_os = "windows")]
 mod windows_input_backend;
@@ -78,11 +79,76 @@ struct Cli {
     /// Use a specific device path instead of auto-detection
     #[arg(long)]
     device: Option<String>,
+
+    /// Record touch session to a binary file
+    #[arg(long, conflicts_with = "play")]
+    record: Option<String>,
+
+    /// Play back a recorded touch session (no device needed)
+    #[arg(long, conflicts_with_all = ["record", "device", "libinput", "heatmap", "config"])]
+    play: Option<String>,
 }
 
 fn main() {
     let cli = Cli::parse();
     let trails = cli.trails.min(20);
+
+    // --- Playback mode: no device needed ---
+    if let Some(ref play_path) = cli.play {
+        let rec = match recording::Recording::load(play_path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to load recording: {}", e);
+                std::process::exit(1);
+            }
+        };
+        eprintln!(
+            "Loaded recording: {} frames, {:.1}s",
+            rec.frames.len(),
+            rec.duration_secs()
+        );
+
+        let evdev_extents = if rec.extent_x > 0 && rec.extent_y > 0 {
+            Some((rec.extent_x, rec.extent_y))
+        } else {
+            None
+        };
+
+        // Dummy channels (not used during playback)
+        let (_touch_tx, touch_rx) = mpsc::channel();
+        let (grab_tx, _grab_rx) = mpsc::channel::<GrabCommand>();
+
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([672.0, 480.0])
+                .with_min_inner_size([320.0, 240.0])
+                .with_title("Tapview - Touchpad Visualizer (Playback)")
+                .with_always_on_top(),
+            ..Default::default()
+        };
+
+        eframe::run_native(
+            "Tapview",
+            options,
+            Box::new(move |_cc| {
+                Ok(Box::new(TapviewApp::new(
+                    touch_rx,
+                    grab_tx,
+                    None,
+                    None,
+                    None,
+                    evdev_extents,
+                    trails,
+                    None,
+                    Some(rec),
+                )))
+            }),
+        )
+        .expect("Failed to run eframe");
+        return;
+    }
+
+    // --- Normal / Recording mode: need a device ---
 
     // Discover touchpad
     #[cfg(target_os = "linux")]
@@ -236,6 +302,23 @@ fn main() {
         std::process::exit(0);
     }
 
+    // Create recorder if --record was specified
+    let recorder = if let Some(ref record_path) = cli.record {
+        let (ex, ey) = evdev_extents.unwrap_or((0, 0));
+        match recording::Recorder::new(record_path, ex, ey) {
+            Ok(r) => {
+                eprintln!("Recording to: {}", record_path);
+                Some(r)
+            }
+            Err(e) => {
+                eprintln!("Failed to create recording file: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
     // Create channels
     let (touch_tx, touch_rx) = mpsc::channel();
     let (grab_tx, grab_rx) = mpsc::channel::<GrabCommand>();
@@ -351,16 +434,22 @@ fn main() {
     };
 
     // Run eframe
+    let is_recording = recorder.is_some();
     let mut initial_width = if libinput_rx.is_some() { 1100.0 } else { 672.0 };
     if ptp_config.is_some() {
         initial_width += 220.0;
     }
     let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
+    let title = if is_recording {
+        "Tapview - Touchpad Visualizer (Recording)"
+    } else {
+        "Tapview - Touchpad Visualizer"
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([initial_width, initial_height])
             .with_min_inner_size([320.0, 240.0])
-            .with_title("Tapview - Touchpad Visualizer")
+            .with_title(title)
             .with_always_on_top(),
         ..Default::default()
     };
@@ -377,6 +466,8 @@ fn main() {
                 ptp_config,
                 evdev_extents,
                 trails,
+                recorder,
+                None,
             )))
         }),
     )
