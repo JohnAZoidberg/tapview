@@ -215,9 +215,7 @@ fn main() {
             );
             if let Some((ex, ey)) = &evdev_extents {
                 if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
-                    eprintln!(
-                        "axis: evdev and HID descriptor disagree!"
-                    );
+                    eprintln!("axis: evdev and HID descriptor disagree!");
                     if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
                         eprintln!("axis: looks like a kernel axis swap");
                         Some(true)
@@ -254,32 +252,64 @@ fn main() {
         if let Some(cfg) = &ptp_config {
             if let Some(phys) = &cfg.physical_size {
                 println!("HID descriptor");
-                println!("  X logical:        {}..{}", phys.x.logical_min, phys.x.logical_max);
-                println!("  X physical:       {}..{}", phys.x.physical_min, phys.x.physical_max);
-                println!("  X size:           {:.1} mm ({:.1} units/mm)", phys.x.size_mm, phys.x.resolution);
-                println!("  Y logical:        {}..{}", phys.y.logical_min, phys.y.logical_max);
-                println!("  Y physical:       {}..{}", phys.y.physical_min, phys.y.physical_max);
-                println!("  Y size:           {:.1} mm ({:.1} units/mm)", phys.y.size_mm, phys.y.resolution);
+                println!(
+                    "  X logical:        {}..{}",
+                    phys.x.logical_min, phys.x.logical_max
+                );
+                println!(
+                    "  X physical:       {}..{}",
+                    phys.x.physical_min, phys.x.physical_max
+                );
+                println!(
+                    "  X size:           {:.1} mm ({:.1} units/mm)",
+                    phys.x.size_mm, phys.x.resolution
+                );
+                println!(
+                    "  Y logical:        {}..{}",
+                    phys.y.logical_min, phys.y.logical_max
+                );
+                println!(
+                    "  Y physical:       {}..{}",
+                    phys.y.physical_min, phys.y.physical_max
+                );
+                println!(
+                    "  Y size:           {:.1} mm ({:.1} units/mm)",
+                    phys.y.size_mm, phys.y.resolution
+                );
                 println!();
             }
 
             println!("PTP config");
             if let Some(mode) = cfg.input_mode {
-                println!("  Input Mode:       {} ({})", render::input_mode_label(mode), mode);
+                println!(
+                    "  Input Mode:       {} ({})",
+                    render::input_mode_label(mode),
+                    mode
+                );
             }
             if let Some(pt) = cfg.pad_type {
-                println!("  Pad Type:         {} ({})", render::pad_type_label(pt), pt);
+                println!(
+                    "  Pad Type:         {} ({})",
+                    render::pad_type_label(pt),
+                    pt
+                );
             }
             if let Some(max) = cfg.contact_count_max {
                 println!("  Max Contacts:     {}", max);
             }
             if cfg.features.has_surface_switch {
-                println!("  Surface Switch:   {}",
-                    cfg.surface_switch.map_or("n/a".to_string(), |v| v.to_string()));
+                println!(
+                    "  Surface Switch:   {}",
+                    cfg.surface_switch
+                        .map_or("n/a".to_string(), |v| v.to_string())
+                );
             }
             if cfg.features.has_button_switch {
-                println!("  Button Switch:    {}",
-                    cfg.button_switch.map_or("n/a".to_string(), |v| v.to_string()));
+                println!(
+                    "  Button Switch:    {}",
+                    cfg.button_switch
+                        .map_or("n/a".to_string(), |v| v.to_string())
+                );
             }
             if let Some(lat) = cfg.latency_mode {
                 println!("  Latency Mode:     {}", if lat { "low" } else { "normal" });

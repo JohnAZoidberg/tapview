@@ -505,16 +505,19 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
             ui.label("Logical Range:");
             ui.strong(format!(
                 "X: {}..{}, Y: {}..{}",
-                phys.x.logical_min, phys.x.logical_max,
-                phys.y.logical_min, phys.y.logical_max,
+                phys.x.logical_min, phys.x.logical_max, phys.y.logical_min, phys.y.logical_max,
             ));
         });
         ui.horizontal(|ui| {
             ui.label("Physical Range:");
             ui.strong(format!(
                 "X: {}..{} ({:.1}/mm), Y: {}..{} ({:.1}/mm)",
-                phys.x.physical_min, phys.x.physical_max, phys.x.resolution,
-                phys.y.physical_min, phys.y.physical_max, phys.y.resolution,
+                phys.x.physical_min,
+                phys.x.physical_max,
+                phys.x.resolution,
+                phys.y.physical_min,
+                phys.y.physical_max,
+                phys.y.resolution,
             ));
         });
     }

@@ -338,8 +338,8 @@ fn physical_range_mm(phys_min: i32, phys_max: i32, unit: u32, unit_exp_raw: i32)
     let exp = decode_unit_exponent(unit_exp_raw);
     let system = unit & 0x0F;
     match system {
-        1 | 2 => Some(range * 10f64.powi(exp) * 10.0),  // SI: cm → mm
-        3 | 4 => Some(range * 10f64.powi(exp) * 25.4),  // English: inch → mm
+        1 | 2 => Some(range * 10f64.powi(exp) * 10.0), // SI: cm → mm
+        3 | 4 => Some(range * 10f64.powi(exp) * 25.4), // English: inch → mm
         _ => None,
     }
 }
