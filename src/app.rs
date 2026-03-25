@@ -45,6 +45,7 @@ pub struct TapviewApp {
 }
 
 impl TapviewApp {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         touch_rx: mpsc::Receiver<TouchState>,
         grab_tx: mpsc::Sender<GrabCommand>,
