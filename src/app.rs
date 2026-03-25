@@ -111,7 +111,12 @@ impl eframe::App for TapviewApp {
             self.playback_time = self.playback_time.clamp(0.0, duration);
 
             // Look up frame
-            if let Some(frame) = self.recording.as_ref().unwrap().frame_at(self.playback_time) {
+            if let Some(frame) = self
+                .recording
+                .as_ref()
+                .unwrap()
+                .frame_at(self.playback_time)
+            {
                 self.current_touches = frame.state.touches;
                 self.buttons = frame.state.buttons;
             }
@@ -347,7 +352,11 @@ impl TapviewApp {
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     // Play/Pause button
-                    let label = if self.playback_playing { "Pause" } else { "Play" };
+                    let label = if self.playback_playing {
+                        "Pause"
+                    } else {
+                        "Play"
+                    };
                     if ui.button(label).clicked() {
                         self.playback_playing = !self.playback_playing;
                         if self.playback_playing && self.playback_time >= duration {
@@ -360,7 +369,8 @@ impl TapviewApp {
                     // Speed buttons
                     for &speed in &[0.25f32, 0.5, 1.0, 2.0] {
                         let text = format!("{}x", speed);
-                        let btn = egui::Button::new(&text).selected((self.playback_speed - speed).abs() < 0.01);
+                        let btn = egui::Button::new(&text)
+                            .selected((self.playback_speed - speed).abs() < 0.01);
                         if ui.add(btn).clicked() {
                             self.playback_speed = speed;
                         }
@@ -370,10 +380,7 @@ impl TapviewApp {
 
                     // Timestamp
                     let current = self.playback_time;
-                    ui.label(format!(
-                        "{:.1}s / {:.1}s",
-                        current, duration
-                    ));
+                    ui.label(format!("{:.1}s / {:.1}s", current, duration));
 
                     // Timeline slider (takes remaining width)
                     let mut t = self.playback_time as f32;

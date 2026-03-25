@@ -167,7 +167,10 @@ impl Recording {
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
         if &magic != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "not a TAPV file"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a TAPV file",
+            ));
         }
 
         let version = read_u32(&mut reader)?;
