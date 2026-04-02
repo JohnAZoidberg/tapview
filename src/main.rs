@@ -333,11 +333,16 @@ fn main() {
     }
 
     // Create recorder if --record was specified
+    // Resolve axis extents for recording: prefer evdev, fall back to PTP logical extents
+    let record_extents = evdev_extents.or_else(|| {
+        ptp_config.as_ref().and_then(|cfg| {
+            cfg.physical_size.as_ref().map(|phys| (phys.x.logical_max, phys.y.logical_max))
+        })
+    });
+
+    // Create recorder if --record was specified
     let recorder = if let Some(ref record_path) = cli.record {
-        let (ex, ey) = evdev_extents.unwrap_or_else(|| {
-            eprintln!("Recording requires evdev axis extents (not available on this platform)");
-            std::process::exit(1);
-        });
+        let (ex, ey) = record_extents.unwrap_or((0, 0));
         match recording::Recorder::new(record_path, ex, ey) {
             Ok(r) => {
                 eprintln!("Recording to: {}", record_path);
