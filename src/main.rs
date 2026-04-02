@@ -334,7 +334,10 @@ fn main() {
 
     // Create recorder if --record was specified
     let recorder = if let Some(ref record_path) = cli.record {
-        let (ex, ey) = evdev_extents.unwrap();
+        let (ex, ey) = evdev_extents.unwrap_or_else(|| {
+            eprintln!("Recording requires evdev axis extents (not available on this platform)");
+            std::process::exit(1);
+        });
         match recording::Recorder::new(record_path, ex, ey) {
             Ok(r) => {
                 eprintln!("Recording to: {}", record_path);
