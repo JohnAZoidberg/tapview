@@ -138,6 +138,19 @@ sudo ./target/release/tapview --record /tmp/session.tapv
 ./target/release/tapview --play /tmp/session.tapv
 ```
 
+#### Cross-platform builds with Nix
+
+```
+nix build            # Linux build
+nix build .#windows  # Windows cross-compile
+```
+
+#### Windows clippy
+
+```
+nix develop .#windows -c cargo clippy --target x86_64-pc-windows-gnu
+```
+
 #### Incremental builds with Nix
 
 Build as your user, then run the binary with sudo:
