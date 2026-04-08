@@ -257,20 +257,20 @@ fn main() {
                     phys.x.logical_min, phys.x.logical_max
                 );
                 println!(
-                    "  X physical:       {}..{}",
-                    phys.x.physical_min, phys.x.physical_max
-                );
-                println!(
-                    "  X size:           {:.1} mm ({:.1} units/mm)",
-                    phys.x.size_mm, phys.x.resolution
-                );
-                println!(
                     "  Y logical:        {}..{}",
                     phys.y.logical_min, phys.y.logical_max
                 );
                 println!(
+                    "  X physical:       {}..{}",
+                    phys.x.physical_min, phys.x.physical_max
+                );
+                println!(
                     "  Y physical:       {}..{}",
                     phys.y.physical_min, phys.y.physical_max
+                );
+                println!(
+                    "  X size:           {:.1} mm ({:.1} units/mm)",
+                    phys.x.size_mm, phys.x.resolution
                 );
                 println!(
                     "  Y size:           {:.1} mm ({:.1} units/mm)",
