@@ -240,6 +240,12 @@ fn main() {
         println!("Device");
         println!("  Path:             {}", device.devnode.display());
         println!("  Integration:      {:?}", device.integration);
+        if let Some(vid) = device.vendor_id {
+            println!("  Vendor ID:        {:04x}", vid);
+        }
+        if let Some(pid) = device.product_id {
+            println!("  Product ID:       {:04x}", pid);
+        }
         println!();
 
         if let Some((ex, ey)) = &evdev_extents {

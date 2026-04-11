@@ -1,6 +1,33 @@
 use super::{DeviceDiscovery, DeviceInfo, DiscoveryError, Integration};
 use std::path::PathBuf;
 
+fn read_input_ids(device: &udev::Device) -> (Option<u16>, Option<u16>) {
+    // Try udev properties first (set for USB devices by usb_id builtin).
+    let from_props = || -> Option<(u16, u16)> {
+        let vid = u16::from_str_radix(device.property_value("ID_VENDOR_ID")?.to_str()?, 16).ok()?;
+        let pid = u16::from_str_radix(device.property_value("ID_MODEL_ID")?.to_str()?, 16).ok()?;
+        Some((vid, pid))
+    };
+    if let Some((v, p)) = from_props() {
+        return (Some(v), Some(p));
+    }
+
+    // Fall back to sysfs id/vendor + id/product on the parent inputX device.
+    // The eventX device's syspath is e.g. `.../input/input7/event6`; its parent
+    // is `input7` which carries the id/ directory.
+    let parent = match device.parent() {
+        Some(p) => p,
+        None => return (None, None),
+    };
+    let vid = parent
+        .attribute_value("id/vendor")
+        .and_then(|v| u16::from_str_radix(v.to_str()?, 16).ok());
+    let pid = parent
+        .attribute_value("id/product")
+        .and_then(|v| u16::from_str_radix(v.to_str()?, 16).ok());
+    (vid, pid)
+}
+
 pub struct UdevDiscovery;
 
 impl DeviceDiscovery for UdevDiscovery {
@@ -43,9 +70,16 @@ impl DeviceDiscovery for UdevDiscovery {
                     }
                 };
 
+                // USB devices expose ID_VENDOR_ID/ID_MODEL_ID as udev properties.
+                // I2C-HID devices don't, but the parent inputX device has the IDs
+                // in its sysfs id/vendor and id/product attributes.
+                let (vendor_id, product_id) = read_input_ids(&device);
+
                 results.push(DeviceInfo {
                     devnode: PathBuf::from(devnode),
                     integration,
+                    vendor_id,
+                    product_id,
                 });
             }
         }
