@@ -10,6 +10,10 @@ pub struct DeviceInfo {
     pub devnode: PathBuf,
     /// Whether this is an internal (built-in) touchpad, external, or unknown.
     pub integration: Integration,
+    /// USB/HID vendor ID (if available).
+    pub vendor_id: Option<u16>,
+    /// USB/HID product ID (if available).
+    pub product_id: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

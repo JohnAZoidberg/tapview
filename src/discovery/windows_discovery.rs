@@ -130,12 +130,29 @@ unsafe fn get_touchpad_info(
     if preparsed_data.0 != 0 {
         let _ = HidD_FreePreparsedData(preparsed_data);
     }
+
+    let (vendor_id, product_id) = if is_touchpad {
+        let mut attrs = HIDD_ATTRIBUTES {
+            Size: std::mem::size_of::<HIDD_ATTRIBUTES>() as u32,
+            ..Default::default()
+        };
+        if HidD_GetAttributes(handle, &mut attrs) {
+            (Some(attrs.VendorID), Some(attrs.ProductID))
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
     let _ = CloseHandle(handle);
 
     if is_touchpad {
         Some(DeviceInfo {
             devnode: PathBuf::from(&device_path),
             integration: Integration::Unknown,
+            vendor_id,
+            product_id,
         })
     } else {
         None
