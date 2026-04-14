@@ -336,7 +336,9 @@ fn main() {
     // Resolve axis extents for recording: prefer evdev, fall back to PTP logical extents
     let record_extents = evdev_extents.or_else(|| {
         ptp_config.as_ref().and_then(|cfg| {
-            cfg.physical_size.as_ref().map(|phys| (phys.x.logical_max, phys.y.logical_max))
+            cfg.physical_size
+                .as_ref()
+                .map(|phys| (phys.x.logical_max, phys.y.logical_max))
         })
     });
 
