@@ -76,6 +76,14 @@ struct Cli {
     #[arg(long)]
     info: bool,
 
+    /// Set haptic intensity (0..=100, exact range is device-dependent) and exit
+    #[arg(long, value_name = "INTENSITY")]
+    set_haptic_intensity: Option<u8>,
+
+    /// Set click force / button-press threshold level (typically 1=light .. 3=firm) and exit
+    #[arg(long, value_name = "LEVEL")]
+    set_click_force: Option<u8>,
+
     /// Use a specific device path instead of auto-detection
     #[arg(long)]
     device: Option<String>,
@@ -321,7 +329,28 @@ fn main() {
                 println!("  Latency Mode:     {}", if lat { "low" } else { "normal" });
             }
             if let Some(thresh) = cfg.button_press_threshold {
-                println!("  Btn Threshold:    {}", thresh);
+                let range = cfg.button_press_threshold_range.as_ref();
+                let range_str = range
+                    .map(|r| format!(" (range {}..{})", r.logical_min, r.logical_max))
+                    .unwrap_or_default();
+                let phys_str = range
+                    .and_then(|r| r.physical)
+                    .map(|(lo, hi)| format!(", physical {}..{} g", lo, hi))
+                    .unwrap_or_default();
+                println!("  Click Force:      {}{}{}", thresh, range_str, phys_str);
+            }
+            if cfg.features.has_haptic_intensity {
+                let range_str = cfg
+                    .haptic_intensity_range
+                    .as_ref()
+                    .map(|r| format!(" (range {}..{})", r.logical_min, r.logical_max))
+                    .unwrap_or_default();
+                println!(
+                    "  Haptic Intensity: {}{}",
+                    cfg.haptic_intensity
+                        .map_or("n/a".to_string(), |v| v.to_string()),
+                    range_str
+                );
             }
             println!();
         } else {
@@ -334,6 +363,48 @@ fn main() {
             Some(true) => println!("detected (evdev axes swapped vs HID descriptor)"),
             Some(false) => println!("none"),
             None => println!("unknown (insufficient data)"),
+        }
+        std::process::exit(0);
+    }
+
+    // --- Set-and-exit flags: apply config changes and exit before launching UI ---
+    if cli.set_haptic_intensity.is_some() || cli.set_click_force.is_some() {
+        let mut cfg = match ptp_config {
+            Some(c) => c,
+            None => {
+                eprintln!("config: device has no PTP/haptic configuration features");
+                std::process::exit(1);
+            }
+        };
+
+        if let Some(value) = cli.set_haptic_intensity {
+            check_set_value(
+                "haptic intensity",
+                value,
+                cfg.features.has_haptic_intensity,
+                cfg.features.haptic_intensity_writable,
+                cfg.haptic_intensity_range.as_ref(),
+            );
+            if let Err(e) = cfg.set_haptic_intensity(value) {
+                eprintln!("config: failed to set haptic intensity: {}", e);
+                std::process::exit(1);
+            }
+            println!("haptic intensity set to {}", value);
+        }
+
+        if let Some(value) = cli.set_click_force {
+            check_set_value(
+                "click force",
+                value,
+                cfg.features.has_button_press_threshold,
+                cfg.features.button_press_threshold_writable,
+                cfg.button_press_threshold_range.as_ref(),
+            );
+            if let Err(e) = cfg.set_button_press_threshold(value) {
+                eprintln!("config: failed to set click force: {}", e);
+                std::process::exit(1);
+            }
+            println!("click force set to {}", value);
         }
         std::process::exit(0);
     }
@@ -518,6 +589,35 @@ fn main() {
         }),
     )
     .expect("Failed to run eframe");
+}
+
+/// Validate a CLI-provided value against a feature's presence/writability/range.
+/// Exits the process with a clear error message on any check failure.
+fn check_set_value(
+    label: &str,
+    value: u8,
+    has_feature: bool,
+    writable: bool,
+    range: Option<&config::ValueRange>,
+) {
+    if !has_feature {
+        eprintln!("config: device does not expose {}", label);
+        std::process::exit(1);
+    }
+    if !writable {
+        eprintln!("config: {} is read-only on this device", label);
+        std::process::exit(1);
+    }
+    if let Some(r) = range {
+        let v = value as i32;
+        if v < r.logical_min || v > r.logical_max {
+            eprintln!(
+                "config: {} value {} out of range ({}..={})",
+                label, value, r.logical_min, r.logical_max
+            );
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

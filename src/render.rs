@@ -598,17 +598,68 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
         }
     }
 
-    // --- Button Press Threshold ---
+    // --- Click Force / Button Press Threshold ---
     if config.features.has_button_press_threshold {
         if let Some(mut threshold) = config.button_press_threshold {
             let prev = threshold;
+            let (lo, hi) = config
+                .button_press_threshold_range
+                .as_ref()
+                .map(|r| {
+                    (
+                        r.logical_min.max(0) as u8,
+                        r.logical_max.clamp(0, 255) as u8,
+                    )
+                })
+                .unwrap_or((0u8, 255u8));
+            // Clamp displayed value into range to avoid the slider rejecting it.
+            threshold = threshold.clamp(lo, hi);
+            let label = "Click Force";
             ui.add_enabled(
                 config.features.button_press_threshold_writable,
-                egui::Slider::new(&mut threshold, 0..=255u8).text("Btn Threshold"),
+                egui::Slider::new(&mut threshold, lo..=hi).text(label),
             );
+            if let Some((pmin, pmax)) = config
+                .button_press_threshold_range
+                .as_ref()
+                .and_then(|r| r.physical)
+            {
+                ui.label(
+                    egui::RichText::new(format!("  {}..{} g", pmin, pmax))
+                        .small()
+                        .color(egui::Color32::DARK_GRAY),
+                );
+            }
             if threshold != prev {
                 if let Err(e) = config.set_button_press_threshold(threshold) {
-                    eprintln!("config: failed to set button threshold: {}", e);
+                    eprintln!("config: failed to set click force: {}", e);
+                }
+            }
+        }
+    }
+
+    // --- Haptic Intensity ---
+    if config.features.has_haptic_intensity {
+        if let Some(mut intensity) = config.haptic_intensity {
+            let prev = intensity;
+            let (lo, hi) = config
+                .haptic_intensity_range
+                .as_ref()
+                .map(|r| {
+                    (
+                        r.logical_min.max(0) as u8,
+                        r.logical_max.clamp(0, 255) as u8,
+                    )
+                })
+                .unwrap_or((0u8, 100u8));
+            intensity = intensity.clamp(lo, hi);
+            ui.add_enabled(
+                config.features.haptic_intensity_writable,
+                egui::Slider::new(&mut intensity, lo..=hi).text("Haptic Intensity"),
+            );
+            if intensity != prev {
+                if let Err(e) = config.set_haptic_intensity(intensity) {
+                    eprintln!("config: failed to set haptic intensity: {}", e);
                 }
             }
         }

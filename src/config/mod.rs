@@ -31,6 +31,7 @@ pub struct PtpFeatures {
     pub has_pad_type: bool,
     pub has_latency_mode: bool,
     pub has_button_press_threshold: bool,
+    pub has_haptic_intensity: bool,
     // Writable flags — false when the descriptor marks the field as Constant,
     // or when a probe write at startup was rejected by the kernel driver.
     pub input_mode_writable: bool,
@@ -38,6 +39,7 @@ pub struct PtpFeatures {
     pub button_switch_writable: bool,
     pub latency_mode_writable: bool,
     pub button_press_threshold_writable: bool,
+    pub haptic_intensity_writable: bool,
 }
 
 /// Snapshot of current PTP configuration values.
@@ -49,6 +51,20 @@ pub struct ConfigValues {
     pub pad_type: Option<u8>,
     pub latency_mode: Option<bool>,
     pub button_press_threshold: Option<u8>,
+    pub haptic_intensity: Option<u8>,
+}
+
+/// Logical (and optional physical) range for a numeric feature field,
+/// extracted from the HID descriptor. Used so sliders can show the
+/// actual valid range instead of guessing.
+#[derive(Clone, Copy)]
+pub struct ValueRange {
+    pub logical_min: i32,
+    pub logical_max: i32,
+    /// Physical min/max in the unit declared by the descriptor (e.g. grams
+    /// for the click-force threshold). Only set when the descriptor declared
+    /// a non-empty physical range distinct from the logical one.
+    pub physical: Option<(i32, i32)>,
 }
 
 /// Platform-specific backend for reading/writing PTP feature reports.
@@ -58,6 +74,7 @@ pub(crate) trait ConfigBackend: Send {
     fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()>;
     fn write_latency_mode(&mut self, high: bool) -> io::Result<()>;
     fn write_button_press_threshold(&mut self, value: u8) -> io::Result<()>;
+    fn write_haptic_intensity(&mut self, value: u8) -> io::Result<()>;
 }
 
 /// PTP device configuration state and controls.
@@ -70,6 +87,9 @@ pub struct PtpConfig {
     pub pad_type: Option<u8>,
     pub latency_mode: Option<bool>,
     pub button_press_threshold: Option<u8>,
+    pub button_press_threshold_range: Option<ValueRange>,
+    pub haptic_intensity: Option<u8>,
+    pub haptic_intensity_range: Option<ValueRange>,
     pub physical_size: Option<TouchpadPhysicalSize>,
     backend: Box<dyn ConfigBackend>,
 }
@@ -84,6 +104,7 @@ impl PtpConfig {
         self.pad_type = v.pad_type;
         self.latency_mode = v.latency_mode;
         self.button_press_threshold = v.button_press_threshold;
+        self.haptic_intensity = v.haptic_intensity;
     }
 
     /// Probe which fields are actually writable by attempting no-op writes.
@@ -123,6 +144,13 @@ impl PtpConfig {
                 }
             }
         }
+        if self.features.haptic_intensity_writable {
+            if let Some(v) = self.haptic_intensity {
+                if self.backend.write_haptic_intensity(v).is_err() {
+                    self.features.haptic_intensity_writable = false;
+                }
+            }
+        }
     }
 
     pub fn set_input_mode(&mut self, value: u8) -> io::Result<()> {
@@ -147,6 +175,12 @@ impl PtpConfig {
     pub fn set_button_press_threshold(&mut self, value: u8) -> io::Result<()> {
         self.backend.write_button_press_threshold(value)?;
         self.button_press_threshold = Some(value);
+        Ok(())
+    }
+
+    pub fn set_haptic_intensity(&mut self, value: u8) -> io::Result<()> {
+        self.backend.write_haptic_intensity(value)?;
+        self.haptic_intensity = Some(value);
         Ok(())
     }
 }

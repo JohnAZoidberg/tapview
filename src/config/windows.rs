@@ -1,4 +1,4 @@
-use super::{ConfigBackend, ConfigValues, PtpConfig, PtpFeatures};
+use super::{ConfigBackend, ConfigValues, PtpConfig, PtpFeatures, ValueRange};
 use crate::heatmap::discovery::{extract_parent_device_id, pcwstr_to_string};
 use crate::heatmap::windows_hid::WinHidDevice;
 use crate::heatmap::HidDevice;
@@ -11,6 +11,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
 
 const DIGITIZER_PAGE: u16 = 0x000D;
+const HAPTIC_PAGE: u16 = 0x000E;
 
 const USAGE_INPUT_MODE: u16 = 0x0052;
 const USAGE_CONTACT_COUNT_MAX: u16 = 0x0055;
@@ -19,9 +20,13 @@ const USAGE_BUTTON_SWITCH: u16 = 0x0058;
 const USAGE_PAD_TYPE: u16 = 0x0059;
 const USAGE_LATENCY_MODE: u16 = 0x0060;
 const USAGE_BUTTON_PRESS_THRESHOLD: u16 = 0x00B0;
+const USAGE_HAPTIC_INTENSITY: u16 = 0x0023;
 
 struct PtpUsageInfo {
+    page: u16,
+    usage: u16,
     report_id: u8,
+    range: ValueRange,
 }
 
 struct WindowsConfigBackend {
@@ -35,6 +40,7 @@ struct WindowsConfigBackend {
     pad_type: Option<PtpUsageInfo>,
     latency_mode: Option<PtpUsageInfo>,
     button_press_threshold: Option<PtpUsageInfo>,
+    haptic_intensity: Option<PtpUsageInfo>,
 }
 
 // PHIDP_PREPARSED_DATA is an opaque pointer (isize), safe to send across threads
@@ -51,7 +57,7 @@ impl Drop for WindowsConfigBackend {
 }
 
 impl WindowsConfigBackend {
-    fn read_usage_value(&self, usage: u16, info: &PtpUsageInfo) -> Option<u32> {
+    fn read_usage_value(&self, info: &PtpUsageInfo) -> Option<u32> {
         let mut buf = vec![0u8; self.feature_report_len];
         buf[0] = info.report_id;
         self.device.get_feature(&mut buf).ok()?;
@@ -61,9 +67,9 @@ impl WindowsConfigBackend {
         let status = unsafe {
             HidP_GetUsageValue(
                 HidP_Feature,
-                DIGITIZER_PAGE,
+                info.page,
                 Some(0),
-                usage,
+                info.usage,
                 &mut value,
                 preparsed,
                 &buf,
@@ -76,7 +82,7 @@ impl WindowsConfigBackend {
         }
     }
 
-    fn write_usage_value(&self, usage: u16, info: &PtpUsageInfo, value: u32) -> io::Result<()> {
+    fn write_usage_value(&self, info: &PtpUsageInfo, value: u32) -> io::Result<()> {
         let mut buf = vec![0u8; self.feature_report_len];
         buf[0] = info.report_id;
         // Read-modify-write
@@ -86,9 +92,9 @@ impl WindowsConfigBackend {
         let status = unsafe {
             HidP_SetUsageValue(
                 HidP_Feature,
-                DIGITIZER_PAGE,
+                info.page,
                 Some(0),
-                usage,
+                info.usage,
                 value,
                 preparsed,
                 &mut buf,
@@ -108,37 +114,42 @@ impl ConfigBackend for WindowsConfigBackend {
             input_mode: self
                 .input_mode
                 .as_ref()
-                .and_then(|i| self.read_usage_value(USAGE_INPUT_MODE, i))
+                .and_then(|i| self.read_usage_value(i))
                 .map(|v| v as u8),
             surface_switch: self
                 .surface_switch
                 .as_ref()
-                .and_then(|i| self.read_usage_value(USAGE_SURFACE_SWITCH, i))
+                .and_then(|i| self.read_usage_value(i))
                 .map(|v| v != 0),
             button_switch: self
                 .button_switch
                 .as_ref()
-                .and_then(|i| self.read_usage_value(USAGE_BUTTON_SWITCH, i))
+                .and_then(|i| self.read_usage_value(i))
                 .map(|v| v != 0),
             contact_count_max: self
                 .contact_count_max
                 .as_ref()
-                .and_then(|i| self.read_usage_value(USAGE_CONTACT_COUNT_MAX, i))
+                .and_then(|i| self.read_usage_value(i))
                 .map(|v| v as u8),
             pad_type: self
                 .pad_type
                 .as_ref()
-                .and_then(|i| self.read_usage_value(USAGE_PAD_TYPE, i))
+                .and_then(|i| self.read_usage_value(i))
                 .map(|v| v as u8),
             latency_mode: self
                 .latency_mode
                 .as_ref()
-                .and_then(|i| self.read_usage_value(USAGE_LATENCY_MODE, i))
+                .and_then(|i| self.read_usage_value(i))
                 .map(|v| v != 0),
             button_press_threshold: self
                 .button_press_threshold
                 .as_ref()
-                .and_then(|i| self.read_usage_value(USAGE_BUTTON_PRESS_THRESHOLD, i))
+                .and_then(|i| self.read_usage_value(i))
+                .map(|v| v as u8),
+            haptic_intensity: self
+                .haptic_intensity
+                .as_ref()
+                .and_then(|i| self.read_usage_value(i))
                 .map(|v| v as u8),
         }
     }
@@ -148,15 +159,15 @@ impl ConfigBackend for WindowsConfigBackend {
             .input_mode
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "input mode not supported"))?;
-        self.write_usage_value(USAGE_INPUT_MODE, info, value as u32)
+        self.write_usage_value(info, value as u32)
     }
 
     fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()> {
         if let Some(info) = &self.surface_switch {
-            self.write_usage_value(USAGE_SURFACE_SWITCH, info, surface as u32)?;
+            self.write_usage_value(info, surface as u32)?;
         }
         if let Some(info) = &self.button_switch {
-            self.write_usage_value(USAGE_BUTTON_SWITCH, info, button as u32)?;
+            self.write_usage_value(info, button as u32)?;
         }
         Ok(())
     }
@@ -166,7 +177,7 @@ impl ConfigBackend for WindowsConfigBackend {
             .latency_mode
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "latency mode not supported"))?;
-        self.write_usage_value(USAGE_LATENCY_MODE, info, high as u32)
+        self.write_usage_value(info, high as u32)
     }
 
     fn write_button_press_threshold(&mut self, value: u8) -> io::Result<()> {
@@ -176,7 +187,14 @@ impl ConfigBackend for WindowsConfigBackend {
                 "button press threshold not supported",
             )
         })?;
-        self.write_usage_value(USAGE_BUTTON_PRESS_THRESHOLD, info, value as u32)
+        self.write_usage_value(info, value as u32)
+    }
+
+    fn write_haptic_intensity(&mut self, value: u8) -> io::Result<()> {
+        let info = self.haptic_intensity.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "haptic intensity not supported")
+        })?;
+        self.write_usage_value(info, value as u32)
     }
 }
 
@@ -324,7 +342,7 @@ unsafe fn check_hid_device_for_config(
         return None;
     }
 
-    // Search for PTP usages on Digitizer page
+    // Search for PTP usages on Digitizer page (and haptic intensity on Haptic page)
     let mut input_mode: Option<PtpUsageInfo> = None;
     let mut surface_switch: Option<PtpUsageInfo> = None;
     let mut button_switch: Option<PtpUsageInfo> = None;
@@ -332,42 +350,55 @@ unsafe fn check_hid_device_for_config(
     let mut pad_type: Option<PtpUsageInfo> = None;
     let mut latency_mode: Option<PtpUsageInfo> = None;
     let mut button_press_threshold: Option<PtpUsageInfo> = None;
+    let mut haptic_intensity: Option<PtpUsageInfo> = None;
 
     for vc in &value_caps[..num_caps as usize] {
-        if vc.UsagePage != DIGITIZER_PAGE {
-            continue;
-        }
-
         // Skip range caps — PTP usages are individual
         if vc.Anonymous.NotRange.Usage == 0 {
             continue;
         }
 
         let usage = vc.Anonymous.NotRange.Usage;
+        let physical = if vc.PhysicalMin != vc.PhysicalMax
+            && (vc.PhysicalMin, vc.PhysicalMax) != (vc.LogicalMin, vc.LogicalMax)
+        {
+            Some((vc.PhysicalMin, vc.PhysicalMax))
+        } else {
+            None
+        };
         let info = PtpUsageInfo {
+            page: vc.UsagePage,
+            usage,
             report_id: vc.ReportID,
+            range: ValueRange {
+                logical_min: vc.LogicalMin,
+                logical_max: vc.LogicalMax,
+                physical,
+            },
         };
 
-        match usage {
-            USAGE_INPUT_MODE => input_mode = Some(info),
-            USAGE_CONTACT_COUNT_MAX => contact_count_max = Some(info),
-            USAGE_SURFACE_SWITCH => surface_switch = Some(info),
-            USAGE_BUTTON_SWITCH => button_switch = Some(info),
-            USAGE_PAD_TYPE => pad_type = Some(info),
-            USAGE_LATENCY_MODE => latency_mode = Some(info),
-            USAGE_BUTTON_PRESS_THRESHOLD => button_press_threshold = Some(info),
+        match (vc.UsagePage, usage) {
+            (DIGITIZER_PAGE, USAGE_INPUT_MODE) => input_mode = Some(info),
+            (DIGITIZER_PAGE, USAGE_CONTACT_COUNT_MAX) => contact_count_max = Some(info),
+            (DIGITIZER_PAGE, USAGE_SURFACE_SWITCH) => surface_switch = Some(info),
+            (DIGITIZER_PAGE, USAGE_BUTTON_SWITCH) => button_switch = Some(info),
+            (DIGITIZER_PAGE, USAGE_PAD_TYPE) => pad_type = Some(info),
+            (DIGITIZER_PAGE, USAGE_LATENCY_MODE) => latency_mode = Some(info),
+            (DIGITIZER_PAGE, USAGE_BUTTON_PRESS_THRESHOLD) => button_press_threshold = Some(info),
+            (HAPTIC_PAGE, USAGE_HAPTIC_INTENSITY) => haptic_intensity = Some(info),
             _ => {}
         }
     }
 
-    // Need at least one PTP feature
+    // Need at least one PTP / haptic feature
     let has_any = input_mode.is_some()
         || surface_switch.is_some()
         || button_switch.is_some()
         || contact_count_max.is_some()
         || pad_type.is_some()
         || latency_mode.is_some()
-        || button_press_threshold.is_some();
+        || button_press_threshold.is_some()
+        || haptic_intensity.is_some();
 
     if !has_any {
         let _ = HidD_FreePreparsedData(preparsed_data);
@@ -383,6 +414,7 @@ unsafe fn check_hid_device_for_config(
         has_pad_type: pad_type.is_some(),
         has_latency_mode: latency_mode.is_some(),
         has_button_press_threshold: button_press_threshold.is_some(),
+        has_haptic_intensity: haptic_intensity.is_some(),
         // Windows HidP API doesn't expose the Constant flag from the descriptor;
         // assume writable if the usage exists — write errors are handled gracefully.
         input_mode_writable: input_mode.is_some(),
@@ -390,7 +422,11 @@ unsafe fn check_hid_device_for_config(
         button_switch_writable: button_switch.is_some(),
         latency_mode_writable: latency_mode.is_some(),
         button_press_threshold_writable: button_press_threshold.is_some(),
+        haptic_intensity_writable: haptic_intensity.is_some(),
     };
+
+    let button_press_threshold_range = button_press_threshold.as_ref().map(|i| i.range);
+    let haptic_intensity_range = haptic_intensity.as_ref().map(|i| i.range);
 
     // Transfer handle ownership to WinHidDevice by opening a new one,
     // since WinHidDevice::open expects a path
@@ -416,6 +452,7 @@ unsafe fn check_hid_device_for_config(
         pad_type,
         latency_mode,
         button_press_threshold,
+        haptic_intensity,
     };
 
     let values = backend.read_all();
@@ -429,6 +466,9 @@ unsafe fn check_hid_device_for_config(
         pad_type: values.pad_type,
         latency_mode: values.latency_mode,
         button_press_threshold: values.button_press_threshold,
+        button_press_threshold_range,
+        haptic_intensity: values.haptic_intensity,
+        haptic_intensity_range,
         physical_size: None,
         backend: Box::new(backend),
     };
