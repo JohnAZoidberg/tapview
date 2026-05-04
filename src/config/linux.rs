@@ -112,8 +112,6 @@ impl ConfigBackend for LinuxConfigBackend {
             contact_count_max: self.read_field(KEY_CONTACT_COUNT_MAX).map(|v| v as u8),
             pad_type: self.read_field(KEY_PAD_TYPE).map(|v| v as u8),
             latency_mode: self.read_field(KEY_LATENCY_MODE).map(|v| v != 0),
-            button_press_threshold: self.read_field(KEY_BUTTON_PRESS_THRESHOLD).map(|v| v as u8),
-            haptic_intensity: self.read_field(KEY_HAPTIC_INTENSITY).map(|v| v as u8),
         }
     }
 
@@ -580,6 +578,10 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
     };
     let values = backend.read_all();
 
+    // Click force / haptic intensity are write-only on this firmware; seed startup defaults.
+    let button_press_threshold = features.has_button_press_threshold.then_some(2);
+    let haptic_intensity = features.has_haptic_intensity.then_some(50);
+
     let mut config = PtpConfig {
         features,
         input_mode: values.input_mode,
@@ -588,9 +590,9 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
         contact_count_max: values.contact_count_max,
         pad_type: values.pad_type,
         latency_mode: values.latency_mode,
-        button_press_threshold: values.button_press_threshold,
+        button_press_threshold,
         button_press_threshold_range,
-        haptic_intensity: values.haptic_intensity,
+        haptic_intensity,
         haptic_intensity_range,
         physical_size,
         backend: Box::new(backend),

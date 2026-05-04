@@ -76,7 +76,7 @@ struct Cli {
     #[arg(long)]
     info: bool,
 
-    /// Set haptic intensity (0..=100, exact range is device-dependent) and exit
+    /// Set haptic intensity (0, 25, 50, 75, or 100 — firmware supports 5 discrete levels) and exit
     #[arg(long, value_name = "INTENSITY")]
     set_haptic_intensity: Option<u8>,
 
@@ -385,6 +385,13 @@ fn main() {
                 cfg.features.haptic_intensity_writable,
                 cfg.haptic_intensity_range.as_ref(),
             );
+            if !matches!(value, 0 | 25 | 50 | 75 | 100) {
+                eprintln!(
+                    "config: haptic intensity must be one of 0, 25, 50, 75, 100 (got {})",
+                    value
+                );
+                std::process::exit(1);
+            }
             if let Err(e) = cfg.set_haptic_intensity(value) {
                 eprintln!("config: failed to set haptic intensity: {}", e);
                 std::process::exit(1);

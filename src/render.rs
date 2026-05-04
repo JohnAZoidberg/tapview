@@ -472,6 +472,15 @@ pub fn pad_type_label(pad_type: u8) -> &'static str {
     }
 }
 
+pub fn click_force_label(level: u8) -> &'static str {
+    match level {
+        1 => "Low",
+        2 => "Medium",
+        3 => "High",
+        _ => "Unknown",
+    }
+}
+
 /// Draw the PTP configuration panel contents.
 pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
     ui.heading("Device Config");
@@ -600,25 +609,18 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
 
     // --- Click Force / Button Press Threshold ---
     if config.features.has_button_press_threshold {
-        if let Some(mut threshold) = config.button_press_threshold {
-            let prev = threshold;
-            let (lo, hi) = config
-                .button_press_threshold_range
-                .as_ref()
-                .map(|r| {
-                    (
-                        r.logical_min.max(0) as u8,
-                        r.logical_max.clamp(0, 255) as u8,
-                    )
-                })
-                .unwrap_or((0u8, 255u8));
-            // Clamp displayed value into range to avoid the slider rejecting it.
-            threshold = threshold.clamp(lo, hi);
-            let label = "Click Force";
-            ui.add_enabled(
-                config.features.button_press_threshold_writable,
-                egui::Slider::new(&mut threshold, lo..=hi).text(label),
-            );
+        if let Some(threshold) = config.button_press_threshold {
+            let mut new_threshold = threshold;
+            let selected_label = click_force_label(threshold);
+            ui.add_enabled_ui(config.features.button_press_threshold_writable, |ui| {
+                egui::ComboBox::from_label("Click Force")
+                    .selected_text(selected_label)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut new_threshold, 1, "Low");
+                        ui.selectable_value(&mut new_threshold, 2, "Medium");
+                        ui.selectable_value(&mut new_threshold, 3, "High");
+                    });
+            });
             if let Some((pmin, pmax)) = config
                 .button_press_threshold_range
                 .as_ref()
@@ -630,8 +632,8 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
                         .color(egui::Color32::DARK_GRAY),
                 );
             }
-            if threshold != prev {
-                if let Err(e) = config.set_button_press_threshold(threshold) {
+            if new_threshold != threshold {
+                if let Err(e) = config.set_button_press_threshold(new_threshold) {
                     eprintln!("config: failed to set click force: {}", e);
                 }
             }
@@ -655,7 +657,9 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
             intensity = intensity.clamp(lo, hi);
             ui.add_enabled(
                 config.features.haptic_intensity_writable,
-                egui::Slider::new(&mut intensity, lo..=hi).text("Haptic Intensity"),
+                egui::Slider::new(&mut intensity, lo..=hi)
+                    .step_by(25.0)
+                    .text("Haptic Intensity"),
             );
             if intensity != prev {
                 if let Err(e) = config.set_haptic_intensity(intensity) {

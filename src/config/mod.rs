@@ -43,6 +43,8 @@ pub struct PtpFeatures {
 }
 
 /// Snapshot of current PTP configuration values.
+/// Excludes write-only fields (click force, haptic intensity) — those are seeded
+/// at construction and only updated when the user writes via the UI/CLI.
 pub struct ConfigValues {
     pub input_mode: Option<u8>,
     pub surface_switch: Option<bool>,
@@ -50,8 +52,6 @@ pub struct ConfigValues {
     pub contact_count_max: Option<u8>,
     pub pad_type: Option<u8>,
     pub latency_mode: Option<bool>,
-    pub button_press_threshold: Option<u8>,
-    pub haptic_intensity: Option<u8>,
 }
 
 /// Logical (and optional physical) range for a numeric feature field,
@@ -103,8 +103,8 @@ impl PtpConfig {
         self.contact_count_max = v.contact_count_max;
         self.pad_type = v.pad_type;
         self.latency_mode = v.latency_mode;
-        self.button_press_threshold = v.button_press_threshold;
-        self.haptic_intensity = v.haptic_intensity;
+        // button_press_threshold and haptic_intensity are write-only on the firmware
+        // (read returns garbage), so refresh leaves the in-memory value alone.
     }
 
     /// Probe which fields are actually writable by attempting no-op writes.
