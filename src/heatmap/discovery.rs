@@ -152,11 +152,9 @@ fn parse_report_descriptor_for_burst_len(desc: &[u8]) -> Option<usize> {
                 current_report_count = Some(count);
             }
             // Feature (Main, tag = 0xB0)
-            0xB0 => {
-                if current_report_id == Some(0x41) {
-                    if let Some(count) = current_report_count {
-                        return Some(count);
-                    }
+            0xB0 if current_report_id == Some(0x41) => {
+                if let Some(count) = current_report_count {
+                    return Some(count);
                 }
             }
             _ => {}

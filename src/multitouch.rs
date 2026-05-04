@@ -122,11 +122,11 @@ impl MTStateMachine {
                 let value = event.value();
 
                 match code {
-                    AbsoluteAxisType::ABS_MT_SLOT => {
-                        if value >= 0 && (value as usize) < MAX_TOUCH_POINTS {
-                            self.slot = Some(value as usize);
-                            self.touches[value as usize].used = true;
-                        }
+                    AbsoluteAxisType::ABS_MT_SLOT
+                        if value >= 0 && (value as usize) < MAX_TOUCH_POINTS =>
+                    {
+                        self.slot = Some(value as usize);
+                        self.touches[value as usize].used = true;
                     }
                     AbsoluteAxisType::ABS_MT_TRACKING_ID => {
                         if value < 0 {

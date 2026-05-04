@@ -1,5 +1,6 @@
 use super::{
     AxisPhysicalInfo, ConfigBackend, ConfigValues, PtpConfig, PtpFeatures, TouchpadPhysicalSize,
+    ValueRange,
 };
 use crate::heatmap::discovery::find_sibling_hidraw;
 use crate::heatmap::hidraw::HidrawDevice;
@@ -19,6 +20,20 @@ const USAGE_LATENCY_MODE: u16 = 0x0060;
 const USAGE_BUTTON_PRESS_THRESHOLD: u16 = 0x00B0;
 
 const DIGITIZER_PAGE: u16 = 0x000D;
+const HAPTIC_PAGE: u16 = 0x000E;
+const USAGE_HAPTIC_INTENSITY: u16 = 0x0023;
+
+/// Key combining usage page and usage ID, so usages on different pages
+/// (e.g. Digitizer 0xB0 vs Haptic 0x23) don't collide in the field table.
+type FieldKey = (u16, u16);
+const KEY_INPUT_MODE: FieldKey = (DIGITIZER_PAGE, USAGE_INPUT_MODE);
+const KEY_CONTACT_COUNT_MAX: FieldKey = (DIGITIZER_PAGE, USAGE_CONTACT_COUNT_MAX);
+const KEY_SURFACE_SWITCH: FieldKey = (DIGITIZER_PAGE, USAGE_SURFACE_SWITCH);
+const KEY_BUTTON_SWITCH: FieldKey = (DIGITIZER_PAGE, USAGE_BUTTON_SWITCH);
+const KEY_PAD_TYPE: FieldKey = (DIGITIZER_PAGE, USAGE_PAD_TYPE);
+const KEY_LATENCY_MODE: FieldKey = (DIGITIZER_PAGE, USAGE_LATENCY_MODE);
+const KEY_BUTTON_PRESS_THRESHOLD: FieldKey = (DIGITIZER_PAGE, USAGE_BUTTON_PRESS_THRESHOLD);
+const KEY_HAPTIC_INTENSITY: FieldKey = (HAPTIC_PAGE, USAGE_HAPTIC_INTENSITY);
 
 #[derive(Debug, Clone)]
 struct FeatureField {
@@ -26,21 +41,38 @@ struct FeatureField {
     bit_offset: usize,
     bit_size: usize,
     read_only: bool,
-    #[allow(dead_code)]
     logical_min: i32,
-    #[allow(dead_code)]
     logical_max: i32,
+    physical_min: i32,
+    physical_max: i32,
+}
+
+impl FeatureField {
+    fn range(&self) -> ValueRange {
+        let physical = if self.physical_min != self.physical_max
+            && (self.physical_min, self.physical_max) != (self.logical_min, self.logical_max)
+        {
+            Some((self.physical_min, self.physical_max))
+        } else {
+            None
+        };
+        ValueRange {
+            logical_min: self.logical_min,
+            logical_max: self.logical_max,
+            physical,
+        }
+    }
 }
 
 struct LinuxConfigBackend {
     device: HidrawDevice,
-    fields: HashMap<u16, FeatureField>,
+    fields: HashMap<FieldKey, FeatureField>,
     report_sizes: HashMap<u8, usize>, // report_id -> byte count (excluding report ID byte)
 }
 
 impl LinuxConfigBackend {
-    fn read_field(&self, usage: u16) -> Option<u32> {
-        let field = self.fields.get(&usage)?;
+    fn read_field(&self, key: FieldKey) -> Option<u32> {
+        let field = self.fields.get(&key)?;
         let report_byte_size = self
             .report_sizes
             .get(&field.report_id)
@@ -52,10 +84,10 @@ impl LinuxConfigBackend {
         Some(extract_bits(&buf[1..], field.bit_offset, field.bit_size))
     }
 
-    fn write_field(&self, usage: u16, value: u32) -> io::Result<()> {
+    fn write_field(&self, key: FieldKey, value: u32) -> io::Result<()> {
         let field = self
             .fields
-            .get(&usage)
+            .get(&key)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "feature field not found"))?;
         let report_byte_size = self
             .report_sizes
@@ -74,38 +106,39 @@ impl LinuxConfigBackend {
 impl ConfigBackend for LinuxConfigBackend {
     fn read_all(&mut self) -> ConfigValues {
         ConfigValues {
-            input_mode: self.read_field(USAGE_INPUT_MODE).map(|v| v as u8),
-            surface_switch: self.read_field(USAGE_SURFACE_SWITCH).map(|v| v != 0),
-            button_switch: self.read_field(USAGE_BUTTON_SWITCH).map(|v| v != 0),
-            contact_count_max: self.read_field(USAGE_CONTACT_COUNT_MAX).map(|v| v as u8),
-            pad_type: self.read_field(USAGE_PAD_TYPE).map(|v| v as u8),
-            latency_mode: self.read_field(USAGE_LATENCY_MODE).map(|v| v != 0),
-            button_press_threshold: self
-                .read_field(USAGE_BUTTON_PRESS_THRESHOLD)
-                .map(|v| v as u8),
+            input_mode: self.read_field(KEY_INPUT_MODE).map(|v| v as u8),
+            surface_switch: self.read_field(KEY_SURFACE_SWITCH).map(|v| v != 0),
+            button_switch: self.read_field(KEY_BUTTON_SWITCH).map(|v| v != 0),
+            contact_count_max: self.read_field(KEY_CONTACT_COUNT_MAX).map(|v| v as u8),
+            pad_type: self.read_field(KEY_PAD_TYPE).map(|v| v as u8),
+            latency_mode: self.read_field(KEY_LATENCY_MODE).map(|v| v != 0),
         }
     }
 
     fn write_input_mode(&mut self, value: u8) -> io::Result<()> {
-        self.write_field(USAGE_INPUT_MODE, value as u32)
+        self.write_field(KEY_INPUT_MODE, value as u32)
     }
 
     fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()> {
-        if self.fields.contains_key(&USAGE_SURFACE_SWITCH) {
-            self.write_field(USAGE_SURFACE_SWITCH, surface as u32)?;
+        if self.fields.contains_key(&KEY_SURFACE_SWITCH) {
+            self.write_field(KEY_SURFACE_SWITCH, surface as u32)?;
         }
-        if self.fields.contains_key(&USAGE_BUTTON_SWITCH) {
-            self.write_field(USAGE_BUTTON_SWITCH, button as u32)?;
+        if self.fields.contains_key(&KEY_BUTTON_SWITCH) {
+            self.write_field(KEY_BUTTON_SWITCH, button as u32)?;
         }
         Ok(())
     }
 
     fn write_latency_mode(&mut self, high: bool) -> io::Result<()> {
-        self.write_field(USAGE_LATENCY_MODE, high as u32)
+        self.write_field(KEY_LATENCY_MODE, high as u32)
     }
 
     fn write_button_press_threshold(&mut self, value: u8) -> io::Result<()> {
-        self.write_field(USAGE_BUTTON_PRESS_THRESHOLD, value as u32)
+        self.write_field(KEY_BUTTON_PRESS_THRESHOLD, value as u32)
+    }
+
+    fn write_haptic_intensity(&mut self, value: u8) -> io::Result<()> {
+        self.write_field(KEY_HAPTIC_INTENSITY, value as u32)
     }
 }
 
@@ -147,23 +180,24 @@ fn insert_bits(data: &mut [u8], bit_offset: usize, bit_size: usize, value: u32) 
 
 // ── HID descriptor parser ────────────────────────────────────────────────────
 
-fn is_ptp_usage(usage: u16) -> bool {
-    matches!(
-        usage,
-        USAGE_INPUT_MODE
-            | USAGE_CONTACT_COUNT_MAX
-            | USAGE_SURFACE_SWITCH
-            | USAGE_BUTTON_SWITCH
-            | USAGE_PAD_TYPE
-            | USAGE_LATENCY_MODE
-            | USAGE_BUTTON_PRESS_THRESHOLD
-    )
+fn recognize_field(usage_page: u16, usage: u16) -> Option<FieldKey> {
+    match (usage_page, usage) {
+        (DIGITIZER_PAGE, USAGE_INPUT_MODE)
+        | (DIGITIZER_PAGE, USAGE_CONTACT_COUNT_MAX)
+        | (DIGITIZER_PAGE, USAGE_SURFACE_SWITCH)
+        | (DIGITIZER_PAGE, USAGE_BUTTON_SWITCH)
+        | (DIGITIZER_PAGE, USAGE_PAD_TYPE)
+        | (DIGITIZER_PAGE, USAGE_LATENCY_MODE)
+        | (DIGITIZER_PAGE, USAGE_BUTTON_PRESS_THRESHOLD)
+        | (HAPTIC_PAGE, USAGE_HAPTIC_INTENSITY) => Some((usage_page, usage)),
+        _ => None,
+    }
 }
 
-/// Parse HID report descriptor to find PTP feature fields.
-/// Returns (usage -> FeatureField map, report_id -> report byte size map).
-fn parse_ptp_features(desc: &[u8]) -> (HashMap<u16, FeatureField>, HashMap<u8, usize>) {
-    let mut fields: HashMap<u16, FeatureField> = HashMap::new();
+/// Parse HID report descriptor to find PTP / haptic feature fields.
+/// Returns (key -> FeatureField map, report_id -> report byte size map).
+fn parse_ptp_features(desc: &[u8]) -> (HashMap<FieldKey, FeatureField>, HashMap<u8, usize>) {
+    let mut fields: HashMap<FieldKey, FeatureField> = HashMap::new();
 
     // Global state
     let mut usage_page: u16 = 0;
@@ -172,6 +206,8 @@ fn parse_ptp_features(desc: &[u8]) -> (HashMap<u16, FeatureField>, HashMap<u8, u
     let mut report_count: u32 = 0;
     let mut logical_min: i32 = 0;
     let mut logical_max: i32 = 0;
+    let mut physical_min: i32 = 0;
+    let mut physical_max: i32 = 0;
 
     // Local state (cleared after each main item)
     let mut usages: Vec<u16> = Vec::new();
@@ -226,6 +262,14 @@ fn parse_ptp_features(desc: &[u8]) -> (HashMap<u16, FeatureField>, HashMap<u8, u
             0x24 => {
                 logical_max = read_signed(data, size);
             }
+            // Physical Minimum (Global)
+            0x34 => {
+                physical_min = read_signed(data, size);
+            }
+            // Physical Maximum (Global)
+            0x44 => {
+                physical_max = read_signed(data, size);
+            }
             // Report Size (Global)
             0x74 => {
                 report_size = read_unsigned(data, size);
@@ -246,29 +290,29 @@ fn parse_ptp_features(desc: &[u8]) -> (HashMap<u16, FeatureField>, HashMap<u8, u
                 // Bit 0 of the Feature item data = Constant flag (1 = read-only)
                 let is_constant = !data.is_empty() && (data[0] & 0x01) != 0;
 
-                if usage_page == DIGITIZER_PAGE {
-                    for field_idx in 0..report_count as usize {
-                        let usage = if field_idx < usages.len() {
-                            usages[field_idx]
-                        } else if !usages.is_empty() {
-                            *usages.last().unwrap()
-                        } else {
-                            continue;
-                        };
+                for field_idx in 0..report_count as usize {
+                    let usage = if field_idx < usages.len() {
+                        usages[field_idx]
+                    } else if !usages.is_empty() {
+                        *usages.last().unwrap()
+                    } else {
+                        continue;
+                    };
 
-                        if is_ptp_usage(usage) {
-                            fields.insert(
-                                usage,
-                                FeatureField {
-                                    report_id,
-                                    bit_offset: base_offset + field_idx * report_size as usize,
-                                    bit_size: report_size as usize,
-                                    read_only: is_constant,
-                                    logical_min,
-                                    logical_max,
-                                },
-                            );
-                        }
+                    if let Some(key) = recognize_field(usage_page, usage) {
+                        fields.insert(
+                            key,
+                            FeatureField {
+                                report_id,
+                                bit_offset: base_offset + field_idx * report_size as usize,
+                                bit_size: report_size as usize,
+                                read_only: is_constant,
+                                logical_min,
+                                logical_max,
+                                physical_min,
+                                physical_max,
+                            },
+                        );
                     }
                 }
 
@@ -495,22 +539,27 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
     }
 
     let writable =
-        |usage: u16| -> bool { fields.get(&usage).map(|f| !f.read_only).unwrap_or(false) };
+        |key: FieldKey| -> bool { fields.get(&key).map(|f| !f.read_only).unwrap_or(false) };
 
     let features = PtpFeatures {
-        has_input_mode: fields.contains_key(&USAGE_INPUT_MODE),
-        has_surface_switch: fields.contains_key(&USAGE_SURFACE_SWITCH),
-        has_button_switch: fields.contains_key(&USAGE_BUTTON_SWITCH),
-        has_contact_count_max: fields.contains_key(&USAGE_CONTACT_COUNT_MAX),
-        has_pad_type: fields.contains_key(&USAGE_PAD_TYPE),
-        has_latency_mode: fields.contains_key(&USAGE_LATENCY_MODE),
-        has_button_press_threshold: fields.contains_key(&USAGE_BUTTON_PRESS_THRESHOLD),
-        input_mode_writable: writable(USAGE_INPUT_MODE),
-        surface_switch_writable: writable(USAGE_SURFACE_SWITCH),
-        button_switch_writable: writable(USAGE_BUTTON_SWITCH),
-        latency_mode_writable: writable(USAGE_LATENCY_MODE),
-        button_press_threshold_writable: writable(USAGE_BUTTON_PRESS_THRESHOLD),
+        has_input_mode: fields.contains_key(&KEY_INPUT_MODE),
+        has_surface_switch: fields.contains_key(&KEY_SURFACE_SWITCH),
+        has_button_switch: fields.contains_key(&KEY_BUTTON_SWITCH),
+        has_contact_count_max: fields.contains_key(&KEY_CONTACT_COUNT_MAX),
+        has_pad_type: fields.contains_key(&KEY_PAD_TYPE),
+        has_latency_mode: fields.contains_key(&KEY_LATENCY_MODE),
+        has_button_press_threshold: fields.contains_key(&KEY_BUTTON_PRESS_THRESHOLD),
+        has_haptic_intensity: fields.contains_key(&KEY_HAPTIC_INTENSITY),
+        input_mode_writable: writable(KEY_INPUT_MODE),
+        surface_switch_writable: writable(KEY_SURFACE_SWITCH),
+        button_switch_writable: writable(KEY_BUTTON_SWITCH),
+        latency_mode_writable: writable(KEY_LATENCY_MODE),
+        button_press_threshold_writable: writable(KEY_BUTTON_PRESS_THRESHOLD),
+        haptic_intensity_writable: writable(KEY_HAPTIC_INTENSITY),
     };
+
+    let button_press_threshold_range = fields.get(&KEY_BUTTON_PRESS_THRESHOLD).map(|f| f.range());
+    let haptic_intensity_range = fields.get(&KEY_HAPTIC_INTENSITY).map(|f| f.range());
 
     let device = match HidrawDevice::open(&hidraw_path) {
         Ok(d) => d,
@@ -529,6 +578,10 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
     };
     let values = backend.read_all();
 
+    // Click force / haptic intensity are write-only on this firmware; seed startup defaults.
+    let button_press_threshold = features.has_button_press_threshold.then_some(2);
+    let haptic_intensity = features.has_haptic_intensity.then_some(50);
+
     let mut config = PtpConfig {
         features,
         input_mode: values.input_mode,
@@ -537,7 +590,10 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
         contact_count_max: values.contact_count_max,
         pad_type: values.pad_type,
         latency_mode: values.latency_mode,
-        button_press_threshold: values.button_press_threshold,
+        button_press_threshold,
+        button_press_threshold_range,
+        haptic_intensity,
+        haptic_intensity_range,
         physical_size,
         backend: Box::new(backend),
     };
@@ -602,21 +658,21 @@ mod tests {
         let (fields, sizes) = parse_ptp_features(&desc);
 
         // Input Mode: report_id=3, bit_offset=0, bit_size=2, writable
-        let im = fields.get(&USAGE_INPUT_MODE).unwrap();
+        let im = fields.get(&KEY_INPUT_MODE).unwrap();
         assert_eq!(im.report_id, 3);
         assert_eq!(im.bit_offset, 0);
         assert_eq!(im.bit_size, 2);
         assert!(!im.read_only);
 
         // Surface Switch: report_id=3, bit_offset=2, bit_size=1, writable
-        let ss = fields.get(&USAGE_SURFACE_SWITCH).unwrap();
+        let ss = fields.get(&KEY_SURFACE_SWITCH).unwrap();
         assert_eq!(ss.report_id, 3);
         assert_eq!(ss.bit_offset, 2);
         assert_eq!(ss.bit_size, 1);
         assert!(!ss.read_only);
 
         // Button Switch: report_id=3, bit_offset=3, bit_size=1, writable
-        let bs = fields.get(&USAGE_BUTTON_SWITCH).unwrap();
+        let bs = fields.get(&KEY_BUTTON_SWITCH).unwrap();
         assert_eq!(bs.report_id, 3);
         assert_eq!(bs.bit_offset, 3);
         assert_eq!(bs.bit_size, 1);
@@ -753,15 +809,68 @@ mod tests {
         let (fields, _) = parse_ptp_features(&desc);
 
         // Input Mode should be writable
-        let im = fields.get(&USAGE_INPUT_MODE).unwrap();
+        let im = fields.get(&KEY_INPUT_MODE).unwrap();
         assert!(!im.read_only);
 
         // Contact Count Max should be read-only
-        let ccm = fields.get(&USAGE_CONTACT_COUNT_MAX).unwrap();
+        let ccm = fields.get(&KEY_CONTACT_COUNT_MAX).unwrap();
         assert!(ccm.read_only);
 
         // Latency Mode should be read-only
-        let lm = fields.get(&USAGE_LATENCY_MODE).unwrap();
+        let lm = fields.get(&KEY_LATENCY_MODE).unwrap();
         assert!(lm.read_only);
+    }
+
+    #[test]
+    fn test_parse_haptic_intensity_and_click_force() {
+        // Fragment from a real touchpad descriptor: Report ID 8 (button press
+        // threshold, click force, logical 1..3 mapped to 110..190 g) and
+        // Report ID 9 (haptic intensity, logical 0..100, on Haptic page 0x0E).
+        let desc: Vec<u8> = vec![
+            0x05, 0x0D, // Usage Page (Digitizer)
+            0x09, 0xB0, // Usage (Button Press Threshold)
+            0x85, 0x08, // Report ID (8)
+            0x35, 0x6E, // Physical Minimum (110)
+            0x46, 0xBE, 0x00, // Physical Maximum (190)
+            0x66, 0x01, 0x01, // Unit (SI Linear: g)
+            0x15, 0x01, // Logical Minimum (1)
+            0x25, 0x03, // Logical Maximum (3)
+            0x95, 0x01, // Report Count (1)
+            0x75, 0x02, // Report Size (2)
+            0xB1, 0x02, // Feature (Data,Var,Abs)
+            0x75, 0x06, // Report Size (6)
+            0xB1, 0x03, // Feature (Cnst,Var,Abs) — padding
+            0x05, 0x0E, // Usage Page (Haptic)
+            0x09, 0x01, // Usage (Simple Haptic Controller)
+            0xA1, 0x02, // Collection (Logical)
+            0x09, 0x23, //   Usage (Intensity)
+            0x85, 0x09, //   Report ID (9)
+            0x15, 0x00, //   Logical Minimum (0)
+            0x25, 0x64, //   Logical Maximum (100)
+            0x75, 0x08, //   Report Size (8)
+            0x95, 0x01, //   Report Count (1)
+            0xB1, 0x02, //   Feature (Data,Var,Abs)
+            0xC0, // End Collection
+        ];
+
+        let (fields, _) = parse_ptp_features(&desc);
+
+        let bpt = fields
+            .get(&KEY_BUTTON_PRESS_THRESHOLD)
+            .expect("click force");
+        assert_eq!(bpt.report_id, 8);
+        assert_eq!(bpt.bit_size, 2);
+        assert_eq!(bpt.logical_min, 1);
+        assert_eq!(bpt.logical_max, 3);
+        assert_eq!(bpt.physical_min, 110);
+        assert_eq!(bpt.physical_max, 190);
+        assert!(!bpt.read_only);
+
+        let hi = fields.get(&KEY_HAPTIC_INTENSITY).expect("haptic intensity");
+        assert_eq!(hi.report_id, 9);
+        assert_eq!(hi.bit_size, 8);
+        assert_eq!(hi.logical_min, 0);
+        assert_eq!(hi.logical_max, 100);
+        assert!(!hi.read_only);
     }
 }
