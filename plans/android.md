@@ -8,9 +8,16 @@ read the touchpad as a **raw HID device**, so most of the work is shared and
 is listed there as phase 1.
 
 **Status (2026-09-07):** phases A and C are implemented on branch `android`
-(Rust side, Kotlin bridge, Gradle project, Makefile, CI job, nix shell);
-phase 0 (the on-device checks) is still open because no phone was attached,
-and phase B (pointer capture) was decided against for now.
+(Rust side, Kotlin bridge, Gradle project, Makefile, CI job, nix shell) and
+verified live on a Fairphone 6 (Android 16) with the daisy Touchpad KB
+(32ac:0034): touches, heatmap and config panel all work. Phase 0 answers:
+`claimInterface(force)` works, but the kernel may leave the device
+unconfigured (250 mA bMaxPower vs the OTG power budget) — the bridge sets the
+configuration explicitly on a failed claim; GET_DESCRIPTOR(Report) must ask
+for the exact length from the HID class descriptor (Zephyr stalls oversized
+requests) and long control transfers fail with EPROTO intermittently on this
+high-speed link, so reads are retried. Heatmap fps not measured yet. Phase B
+(pointer capture) was decided against for now.
 
 ## Verdict
 
