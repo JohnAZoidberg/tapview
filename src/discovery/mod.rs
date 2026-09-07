@@ -190,6 +190,65 @@ pub fn format_device_table(devices: &[DeviceInfo]) -> String {
     out
 }
 
+/// Look up a device by user-supplied identifier: the full devnode path
+/// (`/dev/input/event8`), its basename as shown by `--list` (`event8`), or
+/// just the event number (`8`).
+pub fn find_device<'a>(devices: &'a [DeviceInfo], wanted: &str) -> Option<&'a DeviceInfo> {
+    let wanted = wanted.trim();
+    let path = std::path::Path::new(wanted);
+    let as_event = wanted.parse::<u32>().ok().map(|n| format!("event{}", n));
+    devices.iter().find(|d| {
+        d.devnode == path
+            || d.devnode.file_name() == Some(path.as_os_str())
+            || matches!(
+                (&as_event, d.devnode.file_name()),
+                (Some(ev), Some(name)) if name.to_string_lossy() == *ev
+            )
+    })
+}
+
+/// Show the device table and ask the user to pick one on the terminal.
+/// Prompts again on invalid input; returns `None` on EOF (Ctrl-D).
+/// Everything goes to stderr so stdout stays clean for program output.
+pub fn prompt_for_device(devices: &[DeviceInfo]) -> Option<DeviceInfo> {
+    use std::io::{BufRead, Write};
+
+    eprintln!("Multiple touchpads found:\n");
+    eprint!("{}", format_device_table(devices));
+    eprintln!();
+
+    let default = devices[0]
+        .devnode
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| devices[0].devnode.display().to_string());
+
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    loop {
+        eprint!("Select device [{}]: ", default);
+        let _ = std::io::stderr().flush();
+
+        line.clear();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) | Err(_) => {
+                eprintln!();
+                return None;
+            }
+            Ok(_) => {}
+        }
+
+        let input = line.trim();
+        if input.is_empty() {
+            return Some(devices[0].clone());
+        }
+        match find_device(devices, input) {
+            Some(d) => return Some(d.clone()),
+            None => eprintln!("No such device: {}", input),
+        }
+    }
+}
+
 pub trait DeviceDiscovery {
     fn find_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError>;
 }

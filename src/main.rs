@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 mod app;
 mod config;
 mod dimensions;
@@ -84,7 +86,7 @@ struct Cli {
     #[arg(long, value_name = "LEVEL")]
     set_click_force: Option<u8>,
 
-    /// Use a specific device instead of auto-detection (full path or name from --list, e.g. event8)
+    /// Use a specific device instead of auto-detection (path, name or event number from --list, e.g. event8 or 8)
     #[arg(long)]
     device: Option<String>,
 
@@ -178,20 +180,25 @@ fn main() {
     }
 
     let device = if let Some(ref wanted) = cli.device {
-        // Accept either the full devnode path (/dev/input/event8) or just
-        // the basename (event8) as printed by --list.
-        let path = std::path::Path::new(wanted);
-        match devices.iter().find(|d| {
-            d.devnode == path || d.devnode.file_name() == Some(path.as_os_str())
-        }) {
+        match discovery::find_device(&devices, wanted) {
             Some(d) => d.clone(),
             None => {
                 eprintln!("Device {} not found among detected touchpads. Use --list to see available devices.", wanted);
                 std::process::exit(1);
             }
         }
-    } else {
+    } else if devices.len() == 1 || !std::io::stdin().is_terminal() {
+        // Single device, or no terminal to ask on (e.g. launched from a
+        // desktop menu): take the first (internal touchpads sort first).
         devices[0].clone()
+    } else {
+        match discovery::prompt_for_device(&devices) {
+            Some(d) => d,
+            None => {
+                eprintln!("No device selected.");
+                std::process::exit(1);
+            }
+        }
     };
     eprintln!("Found touchpad: {}", device);
 
