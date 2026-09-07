@@ -1,0 +1,698 @@
+//! The native command-line interface: argument parsing, device selection,
+//! the `--info`/`--set-*` one-shot paths, and assembling the input, heatmap
+//! and config threads before handing over to the egui UI.
+
+use std::io::IsTerminal;
+
+use crate::app::{GrabCommand, TapviewApp};
+#[cfg(target_os = "linux")]
+use crate::discovery::udev_discovery::UdevDiscovery;
+#[cfg(target_os = "windows")]
+use crate::discovery::windows_discovery::WindowsDiscovery;
+use crate::discovery::DeviceDiscovery;
+#[cfg(target_os = "linux")]
+use crate::input::evdev_backend::EvdevBackend;
+#[cfg(target_os = "windows")]
+use crate::input::windows_backend::WindowsBackend;
+use crate::input::InputBackend;
+#[cfg(target_os = "linux")]
+use crate::libinput_backend;
+#[cfg(target_os = "windows")]
+use crate::windows_input_backend;
+use crate::{config, discovery, heatmap, input, recording, render};
+use clap::Parser;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+#[derive(Parser)]
+#[command(name = "tapview", about = "Touchpad Visualizer")]
+struct Cli {
+    /// Number of trail frames to show (max 20)
+    #[arg(short, long, default_value_t = 20)]
+    trails: usize,
+
+    /// Enable verbose event logging to stderr
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Force interpreted input panel (exit if unavailable). Auto-enabled by default.
+    #[arg(short, long, conflicts_with = "no_libinput")]
+    libinput: bool,
+
+    /// Disable interpreted input panel
+    #[arg(long)]
+    no_libinput: bool,
+
+    /// Force raw capacitive heatmap (exit if unavailable). Auto-enabled for compatible hardware.
+    #[arg(long, conflicts_with = "no_heatmap")]
+    heatmap: bool,
+
+    /// Disable raw capacitive heatmap
+    #[arg(long)]
+    no_heatmap: bool,
+
+    /// Force PTP configuration panel (exit if unavailable). Auto-enabled for compatible hardware.
+    #[arg(long, conflicts_with = "no_config")]
+    config: bool,
+
+    /// Disable PTP configuration panel
+    #[arg(long)]
+    no_config: bool,
+
+    /// Override heatmap column count (for debugging stride issues)
+    #[arg(long)]
+    heatmap_cols: Option<usize>,
+
+    /// List detected touchpads and exit
+    #[arg(long)]
+    list: bool,
+
+    /// Print device info (axis ranges, PTP config) and exit without launching the UI
+    #[arg(long)]
+    info: bool,
+
+    /// Set haptic intensity (0, 25, 50, 75, or 100 — firmware supports 5 discrete levels) and exit
+    #[arg(long, value_name = "INTENSITY")]
+    set_haptic_intensity: Option<u8>,
+
+    /// Set click force / button-press threshold level (typically 1=light .. 3=firm) and exit
+    #[arg(long, value_name = "LEVEL")]
+    set_click_force: Option<u8>,
+
+    /// Use a specific device instead of auto-detection (path, name or event number from --list, e.g. event8 or 8)
+    #[arg(long)]
+    device: Option<String>,
+
+    /// Record touch session to a binary file
+    #[arg(long, conflicts_with = "play")]
+    record: Option<String>,
+
+    /// Play back a recorded touch session (no device needed)
+    #[arg(long, conflicts_with_all = ["record", "device", "libinput", "heatmap", "config"])]
+    play: Option<String>,
+}
+
+/// Entry point of the native command-line binary.
+pub fn main() {
+    let cli = Cli::parse();
+    let trails = cli.trails.min(20);
+
+    // --- Playback mode: no device needed ---
+    if let Some(ref play_path) = cli.play {
+        let rec = match recording::Recording::load(play_path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to load recording: {}", e);
+                std::process::exit(1);
+            }
+        };
+        eprintln!(
+            "Loaded recording: {} frames, {:.1}s",
+            rec.frames.len(),
+            rec.duration_secs()
+        );
+
+        let evdev_extents = if rec.extent_x > 0 && rec.extent_y > 0 {
+            Some((rec.extent_x, rec.extent_y))
+        } else {
+            None
+        };
+
+        // Dummy channels (not used during playback)
+        let (_touch_tx, touch_rx) = mpsc::channel();
+        let (grab_tx, _grab_rx) = mpsc::channel::<GrabCommand>();
+
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([672.0, 480.0])
+                .with_min_inner_size([320.0, 240.0])
+                .with_title("Tapview - Touchpad Visualizer (Playback)")
+                .with_always_on_top(),
+            ..Default::default()
+        };
+
+        eframe::run_native(
+            "Tapview",
+            options,
+            Box::new(move |_cc| {
+                Ok(Box::new(TapviewApp::new(
+                    touch_rx,
+                    grab_tx,
+                    None,
+                    None,
+                    None,
+                    evdev_extents,
+                    trails,
+                    None,
+                    Some(rec),
+                )))
+            }),
+        )
+        .expect("Failed to run eframe");
+        return;
+    }
+
+    // --- Normal / Recording mode: need a device ---
+
+    // Discover touchpad
+    #[cfg(target_os = "linux")]
+    let devices = UdevDiscovery::find_touchpads();
+    #[cfg(target_os = "windows")]
+    let devices = WindowsDiscovery::find_touchpads();
+
+    let devices = match devices {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Unable to find touchpad: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if cli.list {
+        print!("{}", discovery::format_device_table(&devices));
+        std::process::exit(0);
+    }
+
+    let device = if let Some(ref wanted) = cli.device {
+        match discovery::find_device(&devices, wanted) {
+            Some(d) => d.clone(),
+            None => {
+                eprintln!("Device {} not found among detected touchpads. Use --list to see available devices.", wanted);
+                std::process::exit(1);
+            }
+        }
+    } else if devices.len() == 1 || !std::io::stdin().is_terminal() {
+        // Single device, or no terminal to ask on (e.g. launched from a
+        // desktop menu): take the first (internal touchpads sort first).
+        devices[0].clone()
+    } else {
+        match discovery::prompt_for_device(&devices) {
+            Some(d) => d,
+            None => {
+                eprintln!("No device selected.");
+                std::process::exit(1);
+            }
+        }
+    };
+    eprintln!("Found touchpad: {}", device);
+
+    // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
+    #[cfg(target_os = "linux")]
+    let evdev_extents = input::evdev_backend::read_axis_extents(&device.devnode);
+    #[cfg(target_os = "windows")]
+    let evdev_extents = None;
+
+    // Discover PTP configuration features (auto-detected by default, forced with --config)
+    let ptp_config = if cli.no_config && !cli.info {
+        None
+    } else {
+        let cfg = config::discover(&device.devnode);
+        if cfg.is_none() && cli.config {
+            eprintln!("config: no PTP configuration features found");
+            std::process::exit(1);
+        }
+        cfg
+    };
+
+    // Log and compare axis ranges from both sources
+    if let Some((ex, ey)) = &evdev_extents {
+        eprintln!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
+    }
+    let axis_swap_detected = if let Some(cfg) = &ptp_config {
+        if let Some(phys) = &cfg.physical_size {
+            eprintln!(
+                "axis: HID descriptor: x={}..{}, y={}..{}",
+                phys.x.logical_min, phys.x.logical_max, phys.y.logical_min, phys.y.logical_max
+            );
+            if let Some((ex, ey)) = &evdev_extents {
+                if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
+                    eprintln!("axis: evdev and HID descriptor disagree!");
+                    if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
+                        eprintln!("axis: looks like a kernel axis swap");
+                        Some(true)
+                    } else {
+                        Some(false)
+                    }
+                } else {
+                    Some(false)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // --info: print device info and exit without launching UI
+    if cli.info {
+        println!("Device");
+        println!("  Path:             {}", device.devnode.display());
+        println!("  Integration:      {:?}", device.integration);
+        if let Some(vid) = device.vendor_id {
+            println!("  Vendor ID:        {:04x}", vid);
+        }
+        if let Some(pid) = device.product_id {
+            println!("  Product ID:       {:04x}", pid);
+        }
+        println!();
+
+        if let Some((ex, ey)) = &evdev_extents {
+            println!("Evdev axes");
+            println!("  X range:          0..{}", ex);
+            println!("  Y range:          0..{}", ey);
+            println!();
+        }
+
+        if let Some(cfg) = &ptp_config {
+            if let Some(phys) = &cfg.physical_size {
+                println!("HID descriptor");
+                println!(
+                    "  X logical:        {}..{}",
+                    phys.x.logical_min, phys.x.logical_max
+                );
+                println!(
+                    "  Y logical:        {}..{}",
+                    phys.y.logical_min, phys.y.logical_max
+                );
+                println!(
+                    "  X physical:       {}..{}",
+                    phys.x.physical_min, phys.x.physical_max
+                );
+                println!(
+                    "  Y physical:       {}..{}",
+                    phys.y.physical_min, phys.y.physical_max
+                );
+                println!(
+                    "  X size:           {:.1} mm ({:.1} units/mm)",
+                    phys.x.size_mm, phys.x.resolution
+                );
+                println!(
+                    "  Y size:           {:.1} mm ({:.1} units/mm)",
+                    phys.y.size_mm, phys.y.resolution
+                );
+                println!();
+            }
+
+            println!("PTP config");
+            if let Some(mode) = cfg.input_mode {
+                println!(
+                    "  Input Mode:       {} ({})",
+                    render::input_mode_label(mode),
+                    mode
+                );
+            }
+            if let Some(pt) = cfg.pad_type {
+                println!(
+                    "  Pad Type:         {} ({})",
+                    render::pad_type_label(pt),
+                    pt
+                );
+            }
+            if let Some(max) = cfg.contact_count_max {
+                println!("  Max Contacts:     {}", max);
+            }
+            if cfg.features.has_surface_switch {
+                println!(
+                    "  Surface Switch:   {}",
+                    cfg.surface_switch
+                        .map_or("n/a".to_string(), |v| v.to_string())
+                );
+            }
+            if cfg.features.has_button_switch {
+                println!(
+                    "  Button Switch:    {}",
+                    cfg.button_switch
+                        .map_or("n/a".to_string(), |v| v.to_string())
+                );
+            }
+            if let Some(lat) = cfg.latency_mode {
+                println!("  Latency Mode:     {}", if lat { "low" } else { "normal" });
+            }
+            if let Some(thresh) = cfg.button_press_threshold {
+                let range = cfg.button_press_threshold_range.as_ref();
+                let range_str = range
+                    .map(|r| format!(" (range {}..{})", r.logical_min, r.logical_max))
+                    .unwrap_or_default();
+                let phys_str = range
+                    .and_then(|r| r.physical)
+                    .map(|(lo, hi)| format!(", physical {}..{} g", lo, hi))
+                    .unwrap_or_default();
+                println!("  Click Force:      {}{}{}", thresh, range_str, phys_str);
+            }
+            if cfg.features.has_haptic_intensity {
+                let range_str = cfg
+                    .haptic_intensity_range
+                    .as_ref()
+                    .map(|r| format!(" (range {}..{})", r.logical_min, r.logical_max))
+                    .unwrap_or_default();
+                println!(
+                    "  Haptic Intensity: {}{}",
+                    cfg.haptic_intensity
+                        .map_or("n/a".to_string(), |v| v.to_string()),
+                    range_str
+                );
+            }
+            println!();
+        } else {
+            println!("PTP config:         not available");
+            println!();
+        }
+
+        print!("Axis swap:          ");
+        match axis_swap_detected {
+            Some(true) => println!("detected (evdev axes swapped vs HID descriptor)"),
+            Some(false) => println!("none"),
+            None => println!("unknown (insufficient data)"),
+        }
+        std::process::exit(0);
+    }
+
+    // --- Set-and-exit flags: apply config changes and exit before launching UI ---
+    if cli.set_haptic_intensity.is_some() || cli.set_click_force.is_some() {
+        let mut cfg = match ptp_config {
+            Some(c) => c,
+            None => {
+                eprintln!("config: device has no PTP/haptic configuration features");
+                std::process::exit(1);
+            }
+        };
+
+        if let Some(value) = cli.set_haptic_intensity {
+            check_set_value(
+                "haptic intensity",
+                value,
+                cfg.features.has_haptic_intensity,
+                cfg.features.haptic_intensity_writable,
+                cfg.haptic_intensity_range.as_ref(),
+            );
+            if !matches!(value, 0 | 25 | 50 | 75 | 100) {
+                eprintln!(
+                    "config: haptic intensity must be one of 0, 25, 50, 75, 100 (got {})",
+                    value
+                );
+                std::process::exit(1);
+            }
+            if let Err(e) = cfg.set_haptic_intensity(value) {
+                eprintln!("config: failed to set haptic intensity: {}", e);
+                std::process::exit(1);
+            }
+            println!("haptic intensity set to {}", value);
+        }
+
+        if let Some(value) = cli.set_click_force {
+            check_set_value(
+                "click force",
+                value,
+                cfg.features.has_button_press_threshold,
+                cfg.features.button_press_threshold_writable,
+                cfg.button_press_threshold_range.as_ref(),
+            );
+            if let Err(e) = cfg.set_button_press_threshold(value) {
+                eprintln!("config: failed to set click force: {}", e);
+                std::process::exit(1);
+            }
+            println!("click force set to {}", value);
+        }
+        std::process::exit(0);
+    }
+
+    // Create recorder if --record was specified
+    // Resolve axis extents for recording: prefer evdev, fall back to PTP logical extents
+    let record_extents = evdev_extents.or_else(|| {
+        ptp_config.as_ref().and_then(|cfg| {
+            cfg.physical_size
+                .as_ref()
+                .map(|phys| (phys.x.logical_max, phys.y.logical_max))
+        })
+    });
+
+    // Create recorder if --record was specified
+    let recorder = if let Some(ref record_path) = cli.record {
+        let (ex, ey) = record_extents.unwrap_or((0, 0));
+        match recording::Recorder::new(record_path, ex, ey) {
+            Ok(r) => {
+                eprintln!("Recording to: {}", record_path);
+                Some(r)
+            }
+            Err(e) => {
+                eprintln!("Failed to create recording file: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    // Create channels
+    let (touch_tx, touch_rx) = mpsc::channel();
+    let (grab_tx, grab_rx) = mpsc::channel::<GrabCommand>();
+
+    // Spawn input thread
+    let device_path = device.devnode.clone();
+    let verbose = cli.verbose;
+
+    #[cfg(target_os = "linux")]
+    thread::spawn(move || {
+        let mut backend = match EvdevBackend::open_with_verbose(&device_path, verbose) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Failed to open device: {}", e);
+                return;
+            }
+        };
+
+        loop {
+            // Check for grab/ungrab commands
+            if let Ok(cmd) = grab_rx.try_recv() {
+                match cmd {
+                    GrabCommand::Grab => {
+                        if let Err(e) = backend.grab() {
+                            eprintln!("Grab failed: {}", e);
+                        }
+                    }
+                    GrabCommand::Ungrab => {
+                        if let Err(e) = backend.ungrab() {
+                            eprintln!("Ungrab failed: {}", e);
+                        }
+                    }
+                }
+            }
+
+            match backend.poll_events() {
+                Ok(Some(state)) => {
+                    let _ = touch_tx.send(state);
+                }
+                Ok(None) => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => {
+                    eprintln!("Input error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    #[cfg(target_os = "windows")]
+    thread::spawn(move || {
+        let _ = verbose; // verbose logging not yet implemented for Windows
+        let mut backend = match WindowsBackend::open(&device_path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Failed to open device: {}", e);
+                return;
+            }
+        };
+
+        loop {
+            if let Ok(cmd) = grab_rx.try_recv() {
+                match cmd {
+                    GrabCommand::Grab => {
+                        if let Err(e) = backend.grab() {
+                            eprintln!("Grab failed: {}", e);
+                        }
+                    }
+                    GrabCommand::Ungrab => {
+                        if let Err(e) = backend.ungrab() {
+                            eprintln!("Ungrab failed: {}", e);
+                        }
+                    }
+                }
+            }
+
+            match backend.poll_events() {
+                Ok(Some(state)) => {
+                    let _ = touch_tx.send(state);
+                }
+                Ok(None) => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => {
+                    eprintln!("Input error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Spawn libinput/interpreted input backend thread (enabled by default)
+    #[cfg(target_os = "linux")]
+    let libinput_rx = if !cli.no_libinput {
+        Some(libinput_backend::spawn_libinput_thread(&device.devnode))
+    } else {
+        None
+    };
+
+    #[cfg(target_os = "windows")]
+    let libinput_rx = if !cli.no_libinput {
+        Some(windows_input_backend::spawn_windows_input_thread())
+    } else {
+        None
+    };
+
+    // Spawn heatmap backend thread (auto-detected by default, forced with --heatmap)
+    let heatmap_rx = if cli.no_heatmap {
+        None
+    } else {
+        spawn_heatmap(&device, cli.heatmap_cols, cli.heatmap)
+    };
+
+    // Run eframe
+    let is_recording = recorder.is_some();
+    let mut initial_width = if libinput_rx.is_some() { 1100.0 } else { 672.0 };
+    if ptp_config.is_some() {
+        initial_width += 220.0;
+    }
+    let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
+    let title = if is_recording {
+        "Tapview - Touchpad Visualizer (Recording)"
+    } else {
+        "Tapview - Touchpad Visualizer"
+    };
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([initial_width, initial_height])
+            .with_min_inner_size([320.0, 240.0])
+            .with_title(title)
+            .with_always_on_top(),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Tapview",
+        options,
+        Box::new(move |_cc| {
+            Ok(Box::new(TapviewApp::new(
+                touch_rx,
+                grab_tx,
+                libinput_rx,
+                heatmap_rx,
+                ptp_config,
+                evdev_extents,
+                trails,
+                recorder,
+                None,
+            )))
+        }),
+    )
+    .expect("Failed to run eframe");
+}
+
+/// Validate a CLI-provided value against a feature's presence/writability/range.
+/// Exits the process with a clear error message on any check failure.
+fn check_set_value(
+    label: &str,
+    value: u8,
+    has_feature: bool,
+    writable: bool,
+    range: Option<&config::ValueRange>,
+) {
+    if !has_feature {
+        eprintln!("config: device does not expose {}", label);
+        std::process::exit(1);
+    }
+    if !writable {
+        eprintln!("config: {} is read-only on this device", label);
+        std::process::exit(1);
+    }
+    if let Some(r) = range {
+        let v = value as i32;
+        if v < r.logical_min || v > r.logical_max {
+            eprintln!(
+                "config: {} value {} out of range ({}..={})",
+                label, value, r.logical_min, r.logical_max
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_heatmap(
+    device: &discovery::DeviceInfo,
+    heatmap_cols: Option<usize>,
+    force: bool,
+) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
+    match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
+        Ok(hidraw_path) => {
+            eprintln!("heatmap: found hidraw device: {}", hidraw_path.display());
+            match heatmap::discovery::determine_burst_report_length(&hidraw_path) {
+                Ok(burst_len) => {
+                    eprintln!("heatmap: burst report length = {}", burst_len);
+                    Some(heatmap::backend::spawn_heatmap_thread(
+                        &hidraw_path,
+                        burst_len,
+                        heatmap_cols,
+                    ))
+                }
+                Err(e) => {
+                    if force {
+                        eprintln!("heatmap: failed to determine burst length: {}", e);
+                        std::process::exit(1);
+                    }
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            if force {
+                eprintln!("heatmap: failed to find sibling hidraw device: {}", e);
+                std::process::exit(1);
+            }
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_heatmap(
+    device: &discovery::DeviceInfo,
+    heatmap_cols: Option<usize>,
+    force: bool,
+) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
+    match heatmap::discovery::find_hid_device_for_heatmap(&device.devnode) {
+        Ok((hid_path, burst_len)) => {
+            eprintln!(
+                "heatmap: found HID device: {}, burst_len={}",
+                hid_path.display(),
+                burst_len
+            );
+            Some(heatmap::backend::spawn_heatmap_thread(
+                &hid_path,
+                burst_len,
+                heatmap_cols,
+            ))
+        }
+        Err(e) => {
+            if force {
+                eprintln!("heatmap: {}", e);
+                std::process::exit(1);
+            }
+            None
+        }
+    }
+}
