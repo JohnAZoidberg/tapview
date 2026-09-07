@@ -38,6 +38,12 @@
           targets = [ "x86_64-pc-windows-gnu" ];
         };
 
+        # Rust toolchain with the Android target (the NDK/SDK themselves stay
+        # outside nix: see android/README.md)
+        rustToolchainAndroid = pkgs.rust-bin.stable.latest.default.override {
+          targets = [ "aarch64-linux-android" ];
+        };
+
         # MinGW cross-compiler toolchain
         mingw = pkgs.pkgsCross.mingwW64.stdenv.cc;
         mingwPthreads = pkgs.pkgsCross.mingwW64.windows.pthreads;
@@ -123,6 +129,24 @@
               export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${builtins.toString (pkgs.lib.makeLibraryPath buildInputs)}";
             '';
           };
+
+        # Android: cargo-ndk plus the Rust target; SDK/NDK from ANDROID_HOME
+        # (default ~/Android), as the android/Makefile expects.
+        devShells.android = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            rustToolchainAndroid
+            cargo-ndk
+            jdk17
+            gnumake
+            android-tools
+          ];
+
+          shellHook = ''
+            export ANDROID_HOME="''${ANDROID_HOME:-$HOME/Android}"
+            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+            echo "Android shell: make -C android build   (SDK/NDK from $ANDROID_HOME, not nix)"
+          '';
+        };
 
         devShells.cross-windows =
           pkgs.mkShell {
