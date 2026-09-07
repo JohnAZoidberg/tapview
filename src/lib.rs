@@ -19,6 +19,7 @@ pub mod libinput_state;
 pub mod multitouch;
 pub mod recording;
 pub mod render;
+pub mod session;
 #[cfg(target_os = "windows")]
 pub mod windows_input_backend;
 

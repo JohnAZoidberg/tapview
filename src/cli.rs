@@ -4,7 +4,7 @@
 
 use std::io::IsTerminal;
 
-use crate::app::{GrabCommand, TapviewApp};
+use crate::app::TapviewApp;
 use crate::config::{ConfigBackend, ConfigDescription, ConfigState, PlatformConfigBackend};
 #[cfg(target_os = "linux")]
 use crate::discovery::udev_discovery::UdevDiscovery;
@@ -18,6 +18,7 @@ use crate::input::windows_backend::WindowsBackend;
 use crate::input::InputBackend;
 #[cfg(target_os = "linux")]
 use crate::libinput_backend;
+use crate::session::{GrabCommand, Session};
 #[cfg(target_os = "windows")]
 use crate::windows_input_backend;
 use crate::{config, discovery, heatmap, recording, render};
@@ -115,16 +116,6 @@ pub fn main() {
             rec.duration_secs()
         );
 
-        let evdev_extents = if rec.extent_x > 0 && rec.extent_y > 0 {
-            Some((rec.extent_x, rec.extent_y))
-        } else {
-            None
-        };
-
-        // Dummy channels (not used during playback)
-        let (_touch_tx, touch_rx) = mpsc::channel();
-        let (grab_tx, _grab_rx) = mpsc::channel::<GrabCommand>();
-
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([672.0, 480.0])
@@ -137,19 +128,7 @@ pub fn main() {
         eframe::run_native(
             "Tapview",
             options,
-            Box::new(move |_cc| {
-                Ok(Box::new(TapviewApp::new(
-                    touch_rx,
-                    grab_tx,
-                    None,
-                    None,
-                    None,
-                    evdev_extents,
-                    trails,
-                    None,
-                    Some(rec),
-                )))
-            }),
+            Box::new(move |_cc| Ok(Box::new(TapviewApp::new(trails).with_playback(rec)))),
         )
         .expect("Failed to run eframe");
         return;
@@ -577,6 +556,23 @@ pub fn main() {
     }
     let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
     let config_handle = ptp_config.map(Ptp::into_handle);
+    // Only the evdev backend can grab the device; on Windows the grab
+    // channel exists for the thread loop's sake but the UI never uses it.
+    #[cfg(target_os = "linux")]
+    let grab_tx = Some(grab_tx);
+    #[cfg(not(target_os = "linux"))]
+    let grab_tx = {
+        drop(grab_tx);
+        None
+    };
+    let session = Session {
+        touch_rx,
+        grab_tx,
+        heatmap_rx,
+        config: config_handle,
+        extents: evdev_extents,
+        recorder,
+    };
     let title = if is_recording {
         "Tapview - Touchpad Visualizer (Recording)"
     } else {
@@ -595,17 +591,11 @@ pub fn main() {
         "Tapview",
         options,
         Box::new(move |_cc| {
-            Ok(Box::new(TapviewApp::new(
-                touch_rx,
-                grab_tx,
-                libinput_rx,
-                heatmap_rx,
-                config_handle,
-                evdev_extents,
-                trails,
-                recorder,
-                None,
-            )))
+            Ok(Box::new(
+                TapviewApp::new(trails)
+                    .with_session(session)
+                    .with_libinput(libinput_rx),
+            ))
         }),
     )
     .expect("Failed to run eframe");
