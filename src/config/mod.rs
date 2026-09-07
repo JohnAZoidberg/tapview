@@ -187,26 +187,18 @@ pub async fn initialize<B: ConfigBackend>(
 /// the same hidraw device open.  The kernel's hid-multitouch driver
 /// manages latency mode automatically (low on open, high on close),
 /// so losing write access here is harmless.
+///
+/// Input Mode and Selective Reporting are deliberately not probed. Feature
+/// reads are not always trustworthy — BlueZ up to 5.87 returns all zeros
+/// for numbered GET_REPORTs over BLE — and writing such a value back
+/// switches the pad to Mouse mode and disables reporting, which silences
+/// the Touchpad evdev node. Their writability is learned lazily instead:
+/// [`ConfigHandle::pump`] clears the flag when a write from the UI fails.
 pub async fn probe_writable<B: ConfigBackend>(
     backend: &mut B,
     features: &mut PtpFeatures,
     state: &ConfigState,
 ) {
-    if features.input_mode_writable {
-        if let Some(v) = state.input_mode {
-            if backend.write_input_mode(v).await.is_err() {
-                features.input_mode_writable = false;
-            }
-        }
-    }
-    if features.surface_switch_writable || features.button_switch_writable {
-        let s = state.surface_switch.unwrap_or(true);
-        let b = state.button_switch.unwrap_or(true);
-        if backend.write_selective_reporting(s, b).await.is_err() {
-            features.surface_switch_writable = false;
-            features.button_switch_writable = false;
-        }
-    }
     if features.latency_mode_writable {
         if let Some(v) = state.latency_mode {
             if backend.write_latency_mode(v).await.is_err() {
@@ -278,6 +270,22 @@ impl ConfigWrite {
                 state.button_press_threshold = from.button_press_threshold
             }
             ConfigWrite::HapticIntensity(_) => state.haptic_intensity = from.haptic_intensity,
+        }
+    }
+
+    /// Clear the writable flag(s) for the field(s) this write touched — the
+    /// lazy counterpart of [`probe_writable`] for fields it does not probe.
+    fn mark_unwritable(&self, features: &mut PtpFeatures) {
+        match self {
+            ConfigWrite::InputMode(_) => features.input_mode_writable = false,
+            ConfigWrite::SelectiveReporting { .. } => {
+                features.surface_switch_writable = false;
+                features.button_switch_writable = false;
+            }
+            // Probed at startup; a later failure is transient, keep the control.
+            ConfigWrite::LatencyMode(_)
+            | ConfigWrite::ButtonPressThreshold(_)
+            | ConfigWrite::HapticIntensity(_) => {}
         }
     }
 }
@@ -409,6 +417,7 @@ impl ConfigHandle {
                     if let Err(e) = result {
                         log::error!("config: failed to set {}: {}", write.label(), e);
                         write.revert_in(&mut self.state, &snapshot);
+                        write.mark_unwritable(&mut self.description.features);
                     }
                 }
             }
@@ -552,16 +561,38 @@ mod tests {
         assert_eq!(state.input_mode, Some(3));
         assert_eq!(state.button_press_threshold, Some(2));
         assert_eq!(state.haptic_intensity, Some(50));
-        // Probe writes: input mode, click force, haptic (no selective/latency fields)
+        // Probe writes: click force, haptic. Input mode is never written back
+        // (the read may be bogus, see probe_writable); no selective/latency fields.
         assert_eq!(
             backend.writes,
             vec![
-                ConfigWrite::InputMode(3),
                 ConfigWrite::ButtonPressThreshold(2),
                 ConfigWrite::HapticIntensity(50),
             ]
         );
         assert!(desc.features.input_mode_writable);
+    }
+
+    #[test]
+    fn failed_input_mode_write_disables_the_control() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+        let (evt_tx, evt_rx) = mpsc::channel();
+        let mut handle = ConfigHandle::new(description(), ConfigState::default(), cmd_tx, evt_rx);
+        handle.state.input_mode = Some(3);
+
+        handle.set_input_mode(0);
+        evt_tx
+            .send(ConfigEvent::WriteResult {
+                write: ConfigWrite::InputMode(0),
+                result: Err("rejected".into()),
+            })
+            .unwrap();
+        handle.pump();
+
+        assert_eq!(handle.state.input_mode, Some(3), "reverted");
+        assert!(!handle.description.features.input_mode_writable);
+        // Probed fields keep their flag on a transient failure.
+        assert!(handle.description.features.haptic_intensity_writable);
     }
 
     #[test]
