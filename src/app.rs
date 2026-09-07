@@ -269,10 +269,14 @@ impl eframe::App for TapviewApp {
             }
         }
 
-        // Drain heatmap frames, keep only the latest
-        if let Some(rx) = self.session.as_ref().and_then(|s| s.heatmap_rx.as_ref()) {
-            while let Ok(frame) = rx.try_recv() {
-                self.heatmap_frame = Some(frame);
+        // Drain heatmap frames, keep only the latest. The last frame stays
+        // while the heatmap is switched off: it proves the hardware supports
+        // one, so the panel (reduced to its switch) stays on screen.
+        if let Some(heatmap) = self.session.as_ref().and_then(|s| s.heatmap.as_ref()) {
+            while let Ok(frame) = heatmap.rx.try_recv() {
+                if heatmap.enabled() {
+                    self.heatmap_frame = Some(frame);
+                }
             }
         }
 
@@ -336,20 +340,37 @@ impl eframe::App for TapviewApp {
             }
         }
 
-        // Show heatmap bottom panel if active
-        if let Some(frame) = &self.heatmap_frame {
-            let mut panel = egui::TopBottomPanel::bottom("heatmap_panel")
+        // Show heatmap bottom panel once the hardware has produced a frame;
+        // switched off, it shrinks to the header with the checkbox
+        let heatmap = self.session.as_ref().and_then(|s| s.heatmap.as_ref());
+        if let (Some(frame), Some(heatmap)) = (&self.heatmap_frame, heatmap) {
+            let mut enabled = heatmap.enabled();
+            // The header-only panel gets its own id: egui remembers a
+            // panel's size per id, and the collapsed height must not become
+            // the size the real panel comes back at.
+            let id = if enabled {
+                "heatmap_panel"
+            } else {
+                "heatmap_panel_off"
+            };
+            let mut panel = egui::TopBottomPanel::bottom(id)
                 .default_height(200.0)
                 .min_height(100.0);
-            if portrait && frame.cols > 0 {
+            if !enabled {
+                panel = panel.exact_height(render::HEATMAP_HEADER_HEIGHT);
+            } else if portrait && frame.cols > 0 {
                 // Full width at the sensor matrix's aspect ratio, capped so
                 // the touchpad keeps at least half the screen
-                let height = screen.width() * frame.rows as f32 / frame.cols as f32 + 30.0;
+                let height = screen.width() * frame.rows as f32 / frame.cols as f32
+                    + render::HEATMAP_HEADER_HEIGHT;
                 panel = panel.exact_height(height.min(screen.height() * 0.35));
             }
             panel.show(ctx, |ui| {
-                render::draw_heatmap_panel(ui, frame);
+                render::draw_heatmap_panel(ui, frame, &mut enabled);
             });
+            if enabled != heatmap.enabled() {
+                heatmap.set_enabled(enabled);
+            }
         }
 
         // Show libinput side panel if we have a receiver

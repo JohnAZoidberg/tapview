@@ -694,26 +694,34 @@ fn heatmap_color(t: f32) -> Color32 {
 }
 
 /// Draw the heatmap panel contents: a 2D grid of colored cells.
-pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame) {
+/// Height of the heatmap panel's header row: the on/off checkbox and the
+/// matrix dimensions. All the panel shows while switched off.
+pub const HEATMAP_HEADER_HEIGHT: f32 = 28.0;
+
+/// The heatmap panel: a header with the enable checkbox (`enabled` is
+/// updated when clicked) and, while enabled, the sensor matrix below it.
+pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame, enabled: &mut bool) {
+    ui.horizontal(|ui| {
+        ui.set_height(HEATMAP_HEADER_HEIGHT - ui.spacing().item_spacing.y);
+        ui.checkbox(enabled, "Heatmap")
+            .on_hover_text("Poll the raw capacitive sensor matrix (feature-report reads)");
+        if *enabled {
+            ui.label(format!("{}x{}", frame.rows, frame.cols));
+        } else {
+            ui.label(egui::RichText::new("off").color(Color32::GRAY));
+        }
+    });
+    // Always claim the whole panel, even when there is nothing to draw:
+    // egui remembers a panel by the height its contents used, and the frame
+    // in which the checkbox goes off is still laid out at full size under
+    // the enabled panel's id. Shrinking here would shrink the panel for
+    // when it comes back.
     let panel_rect = ui.available_rect_before_wrap();
-    let painter = ui.painter();
-
-    // Dimension label at top
-    let label = format!("{}x{}", frame.rows, frame.cols);
-    let label_font = FontId::proportional(13.0);
-    let cx = panel_rect.center().x;
-    painter.text(
-        Pos2::new(cx, panel_rect.min.y + 4.0),
-        egui::Align2::CENTER_TOP,
-        &label,
-        label_font,
-        Color32::BLACK,
-    );
-
-    if frame.rows == 0 || frame.cols == 0 || frame.data.is_empty() {
-        ui.allocate_rect(panel_rect, egui::Sense::hover());
+    ui.allocate_rect(panel_rect, egui::Sense::hover());
+    if !*enabled || frame.rows == 0 || frame.cols == 0 || frame.data.is_empty() {
         return;
     }
+    let painter = ui.painter();
 
     // Find min/max for normalization
     let max_abs = frame
@@ -724,8 +732,8 @@ pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame) {
         .unwrap_or(1)
         .max(1) as f32;
 
-    // Grid area below the label
-    let grid_top = panel_rect.min.y + 22.0;
+    // Grid area below the header
+    let grid_top = panel_rect.min.y + 2.0;
     let grid_width = panel_rect.width() - 4.0;
     let grid_height = panel_rect.max.y - grid_top - 2.0;
 
@@ -755,6 +763,4 @@ pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame) {
             );
         }
     }
-
-    ui.allocate_rect(panel_rect, egui::Sense::hover());
 }

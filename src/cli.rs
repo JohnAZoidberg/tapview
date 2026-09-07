@@ -530,7 +530,7 @@ pub fn main() {
     };
 
     // Spawn heatmap backend thread (auto-detected by default, forced with --heatmap)
-    let heatmap_rx = if cli.no_heatmap {
+    let heatmap = if cli.no_heatmap {
         None
     } else {
         spawn_heatmap(&device, cli.heatmap_cols, cli.heatmap)
@@ -542,13 +542,13 @@ pub fn main() {
     if ptp_config.is_some() {
         initial_width += 220.0;
     }
-    let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
+    let initial_height = if heatmap.is_some() { 650.0 } else { 432.0 };
     let config_handle = ptp_config.map(Ptp::into_handle);
     let session = Session {
         name: device.label(),
         touch_rx,
         grab_tx: can_grab.then_some(grab_tx),
-        heatmap_rx,
+        heatmap,
         config: config_handle,
         extents: session_extents,
         recorder,
@@ -737,7 +737,7 @@ fn spawn_heatmap(
     device: &discovery::DeviceInfo,
     heatmap_cols: Option<usize>,
     force: bool,
-) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
+) -> Option<heatmap::backend::HeatmapStream> {
     match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
         Ok(hidraw_path) => {
             log::info!("heatmap: found hidraw device: {}", hidraw_path.display());
@@ -774,7 +774,7 @@ fn spawn_heatmap(
     device: &discovery::DeviceInfo,
     heatmap_cols: Option<usize>,
     force: bool,
-) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
+) -> Option<heatmap::backend::HeatmapStream> {
     match heatmap::discovery::find_hid_device_for_heatmap(&device.devnode) {
         Ok((hid_path, burst_len)) => {
             log::info!(

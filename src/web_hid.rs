@@ -556,15 +556,25 @@ pub async fn open_session(granted: &Granted) -> Result<Session, String> {
 
     // Heatmap: only PixArt pads answer the chip identification; on anything
     // else the task logs and ends and the panel simply never appears.
-    let heatmap_rx = match heatmap::discovery::burst_report_length(layout) {
+    let heatmap_stream = match heatmap::discovery::burst_report_length(layout) {
         Ok(burst_len) => {
             log::info!("heatmap: burst report length = {}", burst_len);
             let (tx, rx) = mpsc::channel();
+            let control = heatmap::backend::HeatmapControl::default();
             let dev = hid_dev.clone();
+            let loop_control = control.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                heatmap::backend::run_heatmap_loop(&dev, burst_len, None, &tx).await;
+                heatmap::backend::run_heatmap_loop(
+                    &dev,
+                    burst_len,
+                    None,
+                    &tx,
+                    loop_control,
+                    || gloo_timers::future::TimeoutFuture::new(50),
+                )
+                .await;
             });
-            Some(rx)
+            Some(heatmap::backend::HeatmapStream::new(rx, control))
         }
         Err(e) => {
             log::info!("heatmap: not available: {}", e);
@@ -601,7 +611,7 @@ pub async fn open_session(granted: &Granted) -> Result<Session, String> {
         name: granted.label(),
         touch_rx,
         grab_tx: None,
-        heatmap_rx,
+        heatmap: heatmap_stream,
         config,
         extents,
         recorder: None,

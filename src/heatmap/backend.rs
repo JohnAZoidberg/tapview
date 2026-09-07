@@ -1,8 +1,86 @@
 use super::chips::{identify_chip, read_frame, read_matrix_dims, ChipVariant};
 use super::protocol::{read_reg, read_user_reg};
 use super::{HeatmapFrame, HidDevice};
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
+
+/// How long a paused native loop sleeps between checks of its switch.
+const PAUSE_POLL: Duration = Duration::from_millis(50);
+
+/// The switches a running heatmap loop watches, shared with its
+/// [`HeatmapStream`].
+///
+/// Polling the heatmap is a stream of feature-report round trips that
+/// competes with everything else on the link (and on Bluetooth all but
+/// saturates it), so the UI can pause it without tearing the loop down.
+#[derive(Clone, Debug, Default)]
+pub struct HeatmapControl {
+    inner: Arc<Flags>,
+}
+
+#[derive(Debug)]
+struct Flags {
+    paused: AtomicBool,
+    closed: AtomicBool,
+}
+
+impl Default for Flags {
+    fn default() -> Self {
+        Self {
+            paused: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        }
+    }
+}
+
+impl HeatmapControl {
+    pub fn enabled(&self) -> bool {
+        !self.inner.paused.load(Ordering::Relaxed)
+    }
+
+    pub fn set_enabled(&self, on: bool) {
+        self.inner.paused.store(!on, Ordering::Relaxed);
+    }
+
+    fn closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Relaxed)
+    }
+}
+
+/// The UI's end of a heatmap loop: its frames and its on/off switch. The
+/// loop ends when this is dropped.
+pub struct HeatmapStream {
+    pub rx: mpsc::Receiver<HeatmapFrame>,
+    control: HeatmapControl,
+}
+
+impl HeatmapStream {
+    pub fn new(rx: mpsc::Receiver<HeatmapFrame>, control: HeatmapControl) -> Self {
+        Self { rx, control }
+    }
+
+    /// Whether the loop is polling frames.
+    pub fn enabled(&self) -> bool {
+        self.control.enabled()
+    }
+
+    /// Pause or resume polling. Takes effect before the next frame read.
+    pub fn set_enabled(&self, on: bool) {
+        self.control.set_enabled(on);
+    }
+}
+
+impl Drop for HeatmapStream {
+    fn drop(&mut self) {
+        // A paused loop never sends, so it would not notice the receiver
+        // going away on its own.
+        self.control.inner.closed.store(true, Ordering::Relaxed);
+    }
+}
 
 /// Spawn a background thread that continuously reads raw capacitive frames
 /// from the platform HID device at `hidraw_path` and sends them over a channel.
@@ -11,10 +89,12 @@ pub fn spawn_heatmap_thread(
     hidraw_path: &std::path::Path,
     burst_len: usize,
     cols_override: Option<usize>,
-) -> mpsc::Receiver<HeatmapFrame> {
+) -> HeatmapStream {
     let (tx, rx) = mpsc::channel();
+    let control = HeatmapControl::default();
     let path = hidraw_path.to_path_buf();
 
+    let loop_control = control.clone();
     thread::spawn(move || {
         let dev = match super::open_platform_hid_device(&path) {
             Ok(d) => d,
@@ -26,10 +106,17 @@ pub fn spawn_heatmap_thread(
 
         // The HID layer is async for the browser's sake; on a native thread
         // block_on simply blocks where the ioctl used to.
-        pollster::block_on(run_heatmap_loop(&dev, burst_len, cols_override, &tx));
+        pollster::block_on(run_heatmap_loop(
+            &dev,
+            burst_len,
+            cols_override,
+            &tx,
+            loop_control,
+            native_pause,
+        ));
     });
 
-    rx
+    HeatmapStream::new(rx, control)
 }
 
 /// Like [`spawn_heatmap_thread`] for an already opened device (the Android
@@ -38,22 +125,45 @@ pub fn spawn_heatmap_thread_with<D: HidDevice + Send + 'static>(
     dev: D,
     burst_len: usize,
     cols_override: Option<usize>,
-) -> mpsc::Receiver<HeatmapFrame> {
+) -> HeatmapStream {
     let (tx, rx) = mpsc::channel();
+    let control = HeatmapControl::default();
+    let loop_control = control.clone();
     thread::spawn(move || {
-        pollster::block_on(run_heatmap_loop(&dev, burst_len, cols_override, &tx));
+        pollster::block_on(run_heatmap_loop(
+            &dev,
+            burst_len,
+            cols_override,
+            &tx,
+            loop_control,
+            native_pause,
+        ));
     });
-    rx
+    HeatmapStream::new(rx, control)
+}
+
+/// The `pause` for a loop on a native thread of its own: just sleep.
+async fn native_pause() {
+    thread::sleep(PAUSE_POLL);
 }
 
 /// Identify the chip, read its matrix dimensions, then stream frames into
-/// `tx` until the receiver goes away or a read fails.
-pub async fn run_heatmap_loop<D: HidDevice>(
+/// `tx` until the [`HeatmapStream`] is dropped or a read fails. While the
+/// stream is disabled the loop reads nothing and awaits `pause()` between
+/// checks: a sleep on a native thread, a timer future that yields to the
+/// event loop in the browser.
+pub async fn run_heatmap_loop<D, F, Fut>(
     dev: &D,
     burst_len: usize,
     cols_override: Option<usize>,
     tx: &mpsc::Sender<HeatmapFrame>,
-) {
+    control: HeatmapControl,
+    mut pause: F,
+) where
+    D: HidDevice,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
     let chip = match identify_chip(dev).await {
         Ok(c) => c,
         Err(e) => {
@@ -90,6 +200,13 @@ pub async fn run_heatmap_loop<D: HidDevice>(
     }
 
     loop {
+        if control.closed() {
+            break;
+        }
+        if !control.enabled() {
+            pause().await;
+            continue;
+        }
         // Hardware read always uses register-derived dimensions
         match read_frame(dev, chip, rows, cols, burst_len).await {
             Ok(data) => {

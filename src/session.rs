@@ -7,7 +7,7 @@
 //! session: they are not tied to a device.
 
 use crate::config::ConfigHandle;
-use crate::heatmap::HeatmapFrame;
+use crate::heatmap::backend::HeatmapStream;
 use crate::input::TouchState;
 use crate::recording::Recorder;
 use std::sync::mpsc;
@@ -28,8 +28,9 @@ pub struct Session {
     /// where it cannot (Windows RawInput, raw HID transports), which also
     /// hides the grab UI.
     pub grab_tx: Option<mpsc::Sender<GrabCommand>>,
-    /// Raw capacitive frames, when the heatmap backend is running.
-    pub heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
+    /// Raw capacitive frames and the switch to pause reading them, when the
+    /// heatmap backend is running.
+    pub heatmap: Option<HeatmapStream>,
     /// PTP configuration, when the device exposes it.
     pub config: Option<ConfigHandle>,
     /// Axis extents (x_max, y_max), when known from the device; otherwise the

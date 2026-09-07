@@ -73,7 +73,7 @@ fn reserve_insets(ctx: &egui::Context, _app: &mut TapviewApp) {
 pub struct Opened {
     name: String,
     touch_rx: mpsc::Receiver<crate::input::TouchState>,
-    heatmap_rx: Option<mpsc::Receiver<crate::heatmap::HeatmapFrame>>,
+    heatmap: Option<heatmap::backend::HeatmapStream>,
     config: Option<ConfigHandle>,
     extents: Option<(i32, i32)>,
     lost_rx: mpsc::Receiver<String>,
@@ -85,7 +85,7 @@ impl Opened {
             name: self.name,
             touch_rx: self.touch_rx,
             grab_tx: None,
-            heatmap_rx: self.heatmap_rx,
+            heatmap: self.heatmap,
             config: self.config,
             extents: self.extents,
             recorder: None,
@@ -136,7 +136,7 @@ pub fn open_session(dev: &UsbDeviceInfo) -> Result<Opened, String> {
 
     // Heatmap: only PixArt pads answer the chip identification; on anything
     // else the thread logs and exits and the panel simply never appears.
-    let heatmap_rx = match heatmap::discovery::burst_report_length(&layout) {
+    let heatmap = match heatmap::discovery::burst_report_length(&layout) {
         Ok(burst_len) => {
             log::info!("heatmap: burst report length = {}", burst_len);
             Some(heatmap::backend::spawn_heatmap_thread_with(
@@ -171,7 +171,7 @@ pub fn open_session(dev: &UsbDeviceInfo) -> Result<Opened, String> {
     Ok(Opened {
         name: dev.label(),
         touch_rx,
-        heatmap_rx,
+        heatmap,
         config,
         extents,
         lost_rx,

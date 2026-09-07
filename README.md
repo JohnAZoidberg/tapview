@@ -117,6 +117,7 @@ sudo ./target/release/tapview [OPTIONS]
 | `--play <path>` | Play back a recorded touch session (no device needed) |
 | `--hidraw` | Linux: read touches from the hidraw node through tapview's own PTP report parser instead of evdev (same `hidraw` access as the heatmap; no grab). For checking the parser against the kernel |
 | `--dump-hidraw <N>` | Linux: print the HID report descriptor and N raw input reports as hex, then exit |
+| `--heatmap` / `--no-heatmap` | Force the raw capacitive heatmap panel on (exit if the hardware has none) or leave it out entirely. By default it appears when the hardware supports it |
 | `-h, --help` | Show help |
 
 ### Controls
@@ -127,6 +128,8 @@ sudo ./target/release/tapview [OPTIONS]
 | Escape | Release grab |
 | Space | Play/pause (playback mode) |
 | Left/Right | Step -/+100ms (playback mode) |
+
+The heatmap panel has a **Heatmap** checkbox in its header. Unchecking it stops polling the sensor matrix (a stream of feature-report reads that competes with everything else on the link, and over Bluetooth nearly saturates it) and shrinks the panel to the header; checking it resumes. The panel only appears on hardware that produced a frame.
 
 ### Examples
 
