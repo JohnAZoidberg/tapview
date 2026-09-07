@@ -36,9 +36,6 @@ jobs:
       - name: Test
         run: cargo test
 
-      - name: Build (debug)
-        run: cargo build
-
       - name: Build (release)
         run: cargo build --release
 
@@ -65,9 +62,6 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -- -D warnings
-
-      - name: Build (debug)
-        run: cargo build
 
       - name: Build (release)
         run: cargo build --release
