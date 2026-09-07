@@ -5,7 +5,9 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use web_time::Instant;
 
 const MAGIC: &[u8; 4] = b"TAPV";
-const VERSION: u32 = 1;
+/// Version 1: `timestamp_us` + touch state per frame. Version 2 appends the
+/// frame's scan time (a presence byte and a u64) after the touch state.
+const VERSION: u32 = 2;
 
 fn write_bool(w: &mut impl Write, v: bool) -> io::Result<()> {
     w.write_all(&[v as u8])
@@ -106,7 +108,22 @@ fn read_touch_state(r: &mut impl Read) -> io::Result<TouchState> {
         right: read_bool(r)?,
         middle: read_bool(r)?,
     };
-    Ok(TouchState { touches, buttons })
+    Ok(TouchState {
+        touches,
+        buttons,
+        ..TouchState::default()
+    })
+}
+
+fn write_opt_u64(w: &mut impl Write, v: Option<u64>) -> io::Result<()> {
+    write_bool(w, v.is_some())?;
+    write_u64(w, v.unwrap_or(0))
+}
+
+fn read_opt_u64(r: &mut impl Read) -> io::Result<Option<u64>> {
+    let present = read_bool(r)?;
+    let v = read_u64(r)?;
+    Ok(present.then_some(v))
 }
 
 /// Records touch frames with timestamps into any `Write` sink: a file on
@@ -117,7 +134,11 @@ fn read_touch_state(r: &mut impl Read) -> io::Result<TouchState> {
 pub struct Recorder<W: Write = Box<dyn Write + Send>> {
     /// `None` only after `into_inner` took the sink.
     writer: Option<W>,
+    /// Fallback clock for frames without a host stamp.
     start: Instant,
+    /// Host stamp of the first frame; frame times are relative to it, so
+    /// the recorded timing is the backend's, not the UI thread's.
+    first_us: Option<u64>,
 }
 
 impl<W: Write> Recorder<W> {
@@ -130,6 +151,7 @@ impl<W: Write> Recorder<W> {
         Ok(Self {
             writer: Some(writer),
             start: Instant::now(),
+            first_us: None,
         })
     }
 
@@ -138,11 +160,15 @@ impl<W: Write> Recorder<W> {
     }
 
     pub fn record(&mut self, state: &TouchState) -> io::Result<()> {
-        let elapsed = self.start.elapsed();
-        let timestamp_us = elapsed.as_micros() as u64;
+        let now_us = state
+            .timestamp_us
+            .unwrap_or_else(|| self.start.elapsed().as_micros() as u64);
+        let first = *self.first_us.get_or_insert(now_us);
+        let timestamp_us = now_us.saturating_sub(first);
         let w = self.writer();
         write_u64(w, timestamp_us)?;
-        write_touch_state(w, state)
+        write_touch_state(w, state)?;
+        write_opt_u64(w, state.scan_time_us)
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
@@ -175,6 +201,8 @@ impl<W: Write> Drop for Recorder<W> {
 
 pub struct RecordedFrame {
     pub timestamp_us: u64,
+    /// The frame, with `timestamp_us` and `scan_time_us` filled in from the
+    /// file so it can feed the report-rate estimate like a live one.
     pub state: TouchState,
 }
 
@@ -183,6 +211,15 @@ pub struct Recording {
     pub frames: Vec<RecordedFrame>,
     pub extent_x: i32,
     pub extent_y: i32,
+}
+
+/// Everything after a frame's timestamp, per format version.
+fn read_frame_body(r: &mut impl Read, version: u32) -> io::Result<TouchState> {
+    let mut state = read_touch_state(r)?;
+    if version >= 2 {
+        state.scan_time_us = read_opt_u64(r)?;
+    }
+    Ok(state)
 }
 
 impl Recording {
@@ -208,7 +245,7 @@ impl Recording {
         }
 
         let version = read_u32(&mut reader)?;
-        if version != VERSION {
+        if !(1..=VERSION).contains(&version) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unsupported version: {}", version),
@@ -222,8 +259,9 @@ impl Recording {
         loop {
             match read_u64(&mut reader) {
                 Ok(timestamp_us) => {
-                    match read_touch_state(&mut reader) {
-                        Ok(state) => {
+                    match read_frame_body(&mut reader, version) {
+                        Ok(mut state) => {
+                            state.timestamp_us = Some(timestamp_us);
                             frames.push(RecordedFrame {
                                 timestamp_us,
                                 state,
@@ -244,6 +282,15 @@ impl Recording {
             extent_x,
             extent_y,
         })
+    }
+
+    /// The frames in the `span_secs` before `end_secs`, oldest first.
+    pub fn frames_before(&self, end_secs: f64, span_secs: f64) -> &[RecordedFrame] {
+        let end_us = (end_secs.max(0.0) * 1_000_000.0) as u64;
+        let start_us = end_us.saturating_sub((span_secs * 1_000_000.0) as u64);
+        let lo = self.frames.partition_point(|f| f.timestamp_us < start_us);
+        let hi = self.frames.partition_point(|f| f.timestamp_us <= end_us);
+        &self.frames[lo..hi.max(lo)]
     }
 
     pub fn duration_secs(&self) -> f64 {
@@ -398,6 +445,35 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    /// Frame times come from the backend's stamps, relative to the first
+    /// frame, and the pad clock survives the round trip.
+    #[test]
+    fn test_backend_stamps_and_scan_time() {
+        let mut rec = Recorder::new(Vec::new(), 100, 100).unwrap();
+        for i in 0..30u64 {
+            let mut s = TouchState {
+                timestamp_us: Some(5_000_000 + i * 8_000),
+                scan_time_us: Some(i * 7_500),
+                ..TouchState::default()
+            };
+            s.touches[0].used = true;
+            rec.record(&s).unwrap();
+        }
+        let loaded = Recording::from_bytes(&rec.into_inner().unwrap()).unwrap();
+        assert_eq!(loaded.frames[0].timestamp_us, 0);
+        assert_eq!(loaded.frames[1].timestamp_us, 8_000);
+        assert_eq!(loaded.frames[1].state.timestamp_us, Some(8_000));
+        assert_eq!(loaded.frames[1].state.scan_time_us, Some(7_500));
+
+        let window = loaded.frames_before(0.1, 0.05);
+        assert_eq!(window.first().unwrap().timestamp_us, 56_000);
+        assert_eq!(window.last().unwrap().timestamp_us, 96_000);
+        let rate = crate::report_rate::RateEstimator::from_states(
+            loaded.frames_before(1.0, 2.0).iter().map(|f| &f.state),
+        );
+        assert_eq!(rate.estimate().unwrap().pad_hz.unwrap().round(), 133.0);
+    }
+
     #[test]
     fn test_in_memory_round_trip() {
         let state = TouchState {
@@ -411,6 +487,7 @@ mod tests {
                 right: false,
                 middle: true,
             },
+            ..TouchState::default()
         };
         let mut rec = Recorder::new(Vec::new(), 2833, 1723).unwrap();
         rec.record(&state).unwrap();
@@ -421,6 +498,7 @@ mod tests {
         assert_eq!((loaded.extent_x, loaded.extent_y), (2833, 1723));
         assert_eq!(loaded.frames.len(), 2);
         assert_touch_state_eq(&loaded.frames[0].state, &state);
+        assert_eq!(loaded.frames[0].state.scan_time_us, None);
         assert!(loaded.frames[0].timestamp_us <= loaded.frames[1].timestamp_us);
     }
 

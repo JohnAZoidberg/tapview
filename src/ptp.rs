@@ -16,8 +16,11 @@
 //! - slot 0 carries the BTN_TOUCH / BTN_TOOL_DOUBLETAP emulation (`pressed`,
 //!   `pressed_double`) like the evdev state machine does.
 
-use crate::hid::{extract_bits, extract_signed, Collection, ReportField, ReportKind, ReportLayout};
-use crate::input::TouchState;
+use crate::hid::{
+    decode_unit_exponent, extract_bits, extract_signed, Collection, ReportField, ReportKind,
+    ReportLayout,
+};
+use crate::input::{host_now_us, TouchState};
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 
 /// `tool_type` value marking a palm (Linux `MT_TOOL_PALM`).
@@ -65,6 +68,10 @@ pub struct PtpLayout {
     pub report_bytes: usize,
     pub contact_count: Option<ReportField>,
     pub scan_time: Option<ReportField>,
+    /// Microseconds per Scan Time tick, from the field's Unit and Unit
+    /// Exponent; 100 µs (what the Precision Touchpad spec prescribes) when
+    /// the descriptor declares no time unit.
+    pub scan_time_unit_us: f64,
     /// Button-page fields outside the Finger collections; usage 1/2/3 =
     /// left/right/middle.
     pub buttons: Vec<ReportField>,
@@ -126,6 +133,7 @@ impl PtpLayout {
             report_bytes: layout.report_bytes(ReportKind::Input, report_id),
             contact_count: None,
             scan_time: None,
+            scan_time_unit_us: DEFAULT_SCAN_TIME_UNIT_US,
             buttons: Vec::new(),
             fingers: Vec::new(),
             contact_count_max: 0,
@@ -189,9 +197,26 @@ impl PtpLayout {
             .as_ref()
             .map(|f| f.logical_max)
             .unwrap_or(0);
+        if let Some(f) = &ptp.scan_time {
+            ptp.scan_time_unit_us = scan_time_unit_us(f);
+        }
 
         Some(ptp)
     }
+}
+
+const DEFAULT_SCAN_TIME_UNIT_US: f64 = 100.0;
+
+/// Microseconds per tick of a Scan Time field. HID Unit nibble 0 is the
+/// system and nibble 3 the exponent of the time dimension (seconds in every
+/// system); `0x1001` with Unit Exponent `-4` is the usual 100 µs.
+fn scan_time_unit_us(f: &ReportField) -> f64 {
+    let system = f.unit & 0xF;
+    let time_dim = decode_unit_exponent(((f.unit >> 12) & 0xF) as i32);
+    if system == 0 || time_dim != 1 {
+        return DEFAULT_SCAN_TIME_UNIT_US;
+    }
+    10f64.powi(decode_unit_exponent(f.unit_exponent) + 6)
 }
 
 /// Finger-level usages: one of these repeating inside a report means the
@@ -297,6 +322,12 @@ pub struct PtpParser {
     expected: usize,
     received: usize,
     in_frame: bool,
+    /// Scan Time unwrapping: the last raw value, and the ticks since the
+    /// first report.
+    last_scan_raw: Option<u32>,
+    scan_ticks: u64,
+    /// The current frame's Scan Time in microseconds.
+    scan_time_us: Option<u64>,
 }
 
 impl PtpParser {
@@ -311,6 +342,9 @@ impl PtpParser {
             expected: 0,
             received: 0,
             in_frame: false,
+            last_scan_raw: None,
+            scan_ticks: 0,
+            scan_time_us: None,
         }
     }
 
@@ -345,20 +379,24 @@ impl PtpParser {
         }
 
         let count = opt_value(payload, &self.layout.contact_count).map(|c| c.max(0) as usize);
-        match count {
+        let starts_frame = match count {
             // A count starts a frame; a partial one still in progress is dropped.
             Some(c) if c > 0 => {
                 if self.in_frame {
                     log::warn!("ptp: new frame started before the previous one completed");
                 }
-                self.start_frame(c);
+                Some(c)
             }
             // Count 0 mid-frame: hybrid continuation. Count 0 otherwise: an
             // empty frame (all contacts lifted).
-            Some(_) if self.in_frame => {}
-            Some(_) => self.start_frame(0),
+            Some(_) if self.in_frame => None,
+            Some(_) => Some(0),
             // No Contact Count field: every report is a whole frame.
-            None => self.start_frame(self.layout.fingers.len()),
+            None => Some(self.layout.fingers.len()),
+        };
+        if let Some(expected) = starts_frame {
+            self.start_frame(expected);
+            self.read_scan_time(payload);
         }
 
         let take = self
@@ -383,6 +421,25 @@ impl PtpParser {
         self.received = 0;
         self.touched = [false; MAX_TOUCH_POINTS];
         self.in_frame = true;
+    }
+
+    /// Unwrap the frame's Scan Time (the field is typically 16 bits, so it
+    /// wraps every 6.5 s) into a clock that only moves forward.
+    fn read_scan_time(&mut self, payload: &[u8]) {
+        let Some(f) = &self.layout.scan_time else {
+            return;
+        };
+        let raw = extract_bits(payload, f.bit_offset, f.bit_size);
+        if let Some(last) = self.last_scan_raw {
+            let mask = if f.bit_size >= 32 {
+                u32::MAX
+            } else {
+                (1u32 << f.bit_size) - 1
+            };
+            self.scan_ticks += (raw.wrapping_sub(last) & mask) as u64;
+        }
+        self.last_scan_raw = Some(raw);
+        self.scan_time_us = Some((self.scan_ticks as f64 * self.layout.scan_time_unit_us) as u64);
     }
 
     fn apply_finger(&mut self, payload: &[u8], i: usize) {
@@ -461,6 +518,10 @@ impl PtpParser {
         TouchState {
             touches,
             buttons: self.buttons,
+            // Stamped when the report completing the frame was fed, i.e.
+            // as the backend received it.
+            timestamp_us: Some(host_now_us()),
+            scan_time_us: self.scan_time_us,
         }
     }
 }
@@ -583,6 +644,73 @@ mod tests {
         let mut r = vec![layout.report_id];
         r.extend(payload);
         r
+    }
+
+    /// The report with its Scan Time field set to `ticks`.
+    fn with_scan_time(layout: &PtpLayout, mut report: Vec<u8>, ticks: u32) -> Vec<u8> {
+        put(&mut report[1..], &layout.scan_time, ticks);
+        report
+    }
+
+    #[test]
+    fn scan_time_unit_from_descriptor() {
+        let l = framework_layout();
+        // Seconds, exponent -4: the PTP spec's 100 µs.
+        let f = l.scan_time.as_ref().unwrap();
+        assert_eq!(f.unit & 0xF, 1, "SI linear");
+        assert_eq!((f.unit >> 12) & 0xF, 1, "seconds^1");
+        assert_eq!(l.scan_time_unit_us, 100.0);
+
+        let mut ms = f.clone();
+        ms.unit_exponent = 0x0D; // -3
+        assert_eq!(scan_time_unit_us(&ms), 1000.0);
+        let mut none = f.clone();
+        none.unit = 0;
+        assert_eq!(scan_time_unit_us(&none), 100.0);
+    }
+
+    #[test]
+    fn scan_time_unwraps_and_stamps_frames() {
+        let l = framework_layout();
+        let mut p = PtpParser::new(l.clone());
+        let down = |ticks| {
+            with_scan_time(
+                &l,
+                report(&l, 1, &[(7, 100, 100, true, true)], false),
+                ticks,
+            )
+        };
+
+        // The first frame anchors the clock at 0, right before the 16-bit wrap.
+        let s = p.feed(&down(0xFFF0)).unwrap();
+        assert_eq!(s.scan_time_us, Some(0));
+        assert!(s.timestamp_us.is_some());
+        // +80 ticks across the wrap = 8 ms
+        let s = p.feed(&down(0x0040)).unwrap();
+        assert_eq!(s.scan_time_us, Some(8_000));
+        let s = p.feed(&down(0x00B0)).unwrap();
+        assert_eq!(s.scan_time_us, Some(19_200));
+
+        // A hybrid frame takes the scan time of its first report.
+        let l = PtpLayout::from_layout(&ReportLayout::parse(&hybrid_descriptor())).unwrap();
+        let mut p = PtpParser::new(l.clone());
+        let first = with_scan_time(
+            &l,
+            report(
+                &l,
+                3,
+                &[(1, 10, 10, true, true), (2, 20, 20, true, true)],
+                false,
+            ),
+            10,
+        );
+        assert!(p.feed(&first).is_none());
+        let second = with_scan_time(&l, report(&l, 0, &[(3, 30, 30, true, true)], false), 999);
+        let s = p.feed(&second).unwrap();
+        assert_eq!(used(&s), vec![0, 1, 2]);
+        assert_eq!(s.scan_time_us, Some(0));
+        let next = with_scan_time(&l, report(&l, 1, &[(1, 11, 11, true, true)], false), 90);
+        assert_eq!(p.feed(&next).unwrap().scan_time_us, Some(8_000));
     }
 
     fn used(state: &TouchState) -> Vec<usize> {
@@ -714,6 +842,13 @@ mod tests {
             ]);
         }
         d.extend_from_slice(&[
+            0x09, 0x56, //   Usage (Scan Time)
+            0x55, 0x0C, //   Unit Exponent (-4)
+            0x66, 0x01, 0x10, //   Unit (seconds)
+            0x27, 0xFF, 0xFF, 0x00, 0x00, //   Logical Max 65535
+            0x75, 0x10, 0x95, 0x01, //   16 bits x 1
+            0x81, 0x02, //   Input
+            0x55, 0x00, 0x65, 0x00, //   Unit Exponent 0, Unit none
             0x85, 0x05, //   Report ID (5)
             0x09, 0x55, //   Usage (Contact Count Maximum)
             0x25, 0x04, 0x75, 0x08, 0x95, 0x01, //   value 4
@@ -729,8 +864,9 @@ mod tests {
         assert_eq!(l.report_id, 4);
         assert_eq!(l.fingers.len(), 2);
         assert_eq!(l.contact_count_max, 4);
-        assert_eq!(l.report_bytes, 1 + 2 * 5);
+        assert_eq!(l.report_bytes, 1 + 2 * 5 + 2);
         assert!(l.buttons.is_empty());
+        assert_eq!(l.scan_time_unit_us, 100.0);
 
         let mut p = PtpParser::new(l.clone());
         // Three contacts: first report announces 3 and carries two

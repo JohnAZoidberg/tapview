@@ -17,7 +17,17 @@ A Linux touchpad visualizer. Shows multitouch contact points in real time using 
 - Renders touch points as colored circles with trails
 - Magenta = first finger, teal = additional fingers, gray = palm-rejected touches
 - Shows press state (filled dot) and double-tap state (ring)
+- Estimates the report rate in the top-right corner while a finger is down (see below)
 - Optionally grabs exclusive access so touches don't move the system cursor
+
+### Report rate
+
+While a finger is on the pad, the top-right corner shows something like `Report rate: pad 140 Hz · host 100 Hz`, taken over the last two seconds of contact and held while the pad is idle.
+
+- **pad** is the touchpad's scan cadence: the typical (median) step of the timestamp the pad writes into each report (PTP Scan Time, which the kernel passes on as `MSC_TIMESTAMP`). It says how often the pad scans, regardless of what happens on the way to the host.
+- **host** is throughput: the number of frames that arrived, divided by the time they span on the host's clock. A count rather than a median, because links that deliver frames in clumps (Bluetooth hands them over on its connection-interval grid) would otherwise make the typical arrival gap look faster than the real rate.
+
+The two agree on a pad whose every scan reaches the host. `pad` above `host` means scans are being skipped, coalesced or dropped between the pad and the host: a pad that scans at 140 Hz but only ships a report every 10 ms reads `pad 140 Hz · host 100 Hz`. Only `host` is shown when the device puts no timestamp in its reports (or on Windows, where it is not read yet). In playback, the figure is the rate around the current position of the recording.
 
 ## Dependencies
 

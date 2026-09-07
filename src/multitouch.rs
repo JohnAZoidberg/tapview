@@ -59,6 +59,10 @@ pub struct MTStateMachine {
     slot: Option<usize>,
     pub touches: [TouchData; MAX_TOUCH_POINTS],
     pub buttons: ButtonState,
+    /// The device's clock for the current frame: MSC_TIMESTAMP in
+    /// microseconds, which hid-multitouch derives from the PTP Scan Time
+    /// (and restarts from 0 after a pause of over a second).
+    pub scan_time_us: Option<u64>,
 }
 
 #[cfg(target_os = "linux")]
@@ -69,9 +73,14 @@ impl Default for MTStateMachine {
             slot: None,
             touches: [TouchData::default(); MAX_TOUCH_POINTS],
             buttons: ButtonState::default(),
+            scan_time_us: None,
         }
     }
 }
+
+/// `MSC_TIMESTAMP` from linux/input-event-codes.h.
+#[cfg(target_os = "linux")]
+const MSC_TIMESTAMP: u16 = 0x05;
 
 #[cfg(target_os = "linux")]
 impl MTStateMachine {
@@ -186,7 +195,11 @@ impl MTStateMachine {
                     _ => {}
                 }
             }
-            EventType::MISC => {}
+            EventType::MISC => {
+                if event.code() == MSC_TIMESTAMP {
+                    self.scan_time_us = Some(event.value() as u32 as u64);
+                }
+            }
             EventType::SYNCHRONIZATION => {
                 self.state = MTState::ReadReady;
             }
@@ -212,7 +225,10 @@ pub fn print_event(event: &InputEvent) {
         EventType::SYNCHRONIZATION => "EV_SYN",
         _ => "EV_???",
     };
-    let code_name = code_lookup(event.code());
+    let code_name = match event.event_type() {
+        EventType::MISC if event.code() == MSC_TIMESTAMP => Some("TIMESTAMP"),
+        _ => code_lookup(event.code()),
+    };
     match code_name {
         Some(name) => log::debug!("  {}({}, {})", type_name, name, event.value()),
         None => log::debug!("  {}(0x{:X}, {})", type_name, event.code(), event.value()),

@@ -28,6 +28,7 @@ pub mod multitouch;
 pub mod ptp;
 pub mod recording;
 pub mod render;
+pub mod report_rate;
 pub mod session;
 /// The browser front end: WebHID connect flow, session assembly, eframe entry.
 #[cfg(target_arch = "wasm32")]

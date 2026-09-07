@@ -5,11 +5,14 @@ use crate::libinput_state::LibinputState;
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use crate::recording::Recording;
 use crate::render;
+use crate::report_rate::RateEstimator;
 use crate::session::{GrabCommand, Session};
 use std::sync::mpsc;
 use web_time::Instant;
 
 const HISTORY_MAX: usize = 20;
+/// How far back a playback position looks for its report-rate estimate.
+const PLAYBACK_RATE_WINDOW_SECS: f64 = 2.0;
 
 /// Something the no-session screen's controls produced.
 pub enum SessionRequest {
@@ -82,6 +85,7 @@ pub struct TapviewApp {
     trails: usize,
     grabbed: bool,
     frame_hook: Option<FrameHook>,
+    rate: RateEstimator,
 }
 
 impl TapviewApp {
@@ -104,6 +108,7 @@ impl TapviewApp {
             trails,
             grabbed: false,
             frame_hook: None,
+            rate: RateEstimator::new(),
         }
     }
 
@@ -177,6 +182,7 @@ impl TapviewApp {
             *h = [TouchData::default(); MAX_TOUCH_POINTS];
         }
         self.heatmap_frame = None;
+        self.rate = RateEstimator::new();
     }
 }
 
@@ -232,11 +238,19 @@ impl eframe::App for TapviewApp {
                 self.current_touches = frame.state.touches;
                 self.buttons = frame.state.buttons;
             }
+            // The rate as it was at this point of the recording
+            self.rate = RateEstimator::from_states(
+                pb.recording
+                    .frames_before(pb.time, PLAYBACK_RATE_WINDOW_SECS)
+                    .iter()
+                    .map(|f| &f.state),
+            );
         } else if let Some(session) = &mut self.session {
             // --- Live mode: drain touch events ---
             while let Ok(state) = session.touch_rx.try_recv() {
                 self.current_touches = state.touches;
                 self.buttons = state.buttons;
+                self.rate.push(&state);
 
                 // Record each frame
                 if let Some(recorder) = &mut session.recorder {
@@ -405,6 +419,18 @@ impl eframe::App for TapviewApp {
                         central_rect.min + egui::vec2(6.0, 4.0),
                         egui::Align2::LEFT_TOP,
                         &session.name,
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::GRAY,
+                    );
+                }
+
+                // Report rate, opposite corner; holds the last estimate
+                // while nothing touches the pad
+                if let Some(rate) = self.rate.estimate() {
+                    painter.text(
+                        egui::pos2(central_rect.max.x - 6.0, central_rect.min.y + 4.0),
+                        egui::Align2::RIGHT_TOP,
+                        format!("Report rate: {}", rate.label()),
                         egui::FontId::proportional(12.0),
                         egui::Color32::GRAY,
                     );

@@ -375,7 +375,13 @@ unsafe fn parse_touchpad_report(cache: &PreparsedCache, report: &[u8]) -> Option
         slot += 1;
     }
 
-    Some(TouchState { touches, buttons })
+    Some(TouchState {
+        touches,
+        buttons,
+        timestamp_us: Some(crate::input::host_now_us()),
+        // Scan Time is not read here yet, so only the host rate is known.
+        scan_time_us: None,
+    })
 }
 
 unsafe fn get_usage_value(
