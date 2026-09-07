@@ -2,7 +2,7 @@ use crate::input::TouchState;
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::time::Instant;
+use web_time::Instant;
 
 const MAGIC: &[u8; 4] = b"TAPV";
 const VERSION: u32 = 1;
@@ -109,39 +109,65 @@ fn read_touch_state(r: &mut impl Read) -> io::Result<TouchState> {
     Ok(TouchState { touches, buttons })
 }
 
-/// Records touch frames to a binary file with timestamps.
-pub struct Recorder {
-    writer: BufWriter<File>,
+/// Records touch frames with timestamps into any `Write` sink: a file on
+/// the desktop, an in-memory buffer in the browser or on Android.
+///
+/// The default sink type is a boxed writer so `Recorder` without a type
+/// parameter names what the app holds.
+pub struct Recorder<W: Write = Box<dyn Write + Send>> {
+    /// `None` only after `into_inner` took the sink.
+    writer: Option<W>,
     start: Instant,
 }
 
-impl Recorder {
-    pub fn new(path: &str, extent_x: i32, extent_y: i32) -> io::Result<Self> {
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
+impl<W: Write> Recorder<W> {
+    /// Write the file header and start the clock.
+    pub fn new(mut writer: W, extent_x: i32, extent_y: i32) -> io::Result<Self> {
         writer.write_all(MAGIC)?;
         write_u32(&mut writer, VERSION)?;
         write_i32(&mut writer, extent_x)?;
         write_i32(&mut writer, extent_y)?;
         Ok(Self {
-            writer,
+            writer: Some(writer),
             start: Instant::now(),
         })
+    }
+
+    fn writer(&mut self) -> &mut W {
+        self.writer.as_mut().expect("recorder sink already taken")
     }
 
     pub fn record(&mut self, state: &TouchState) -> io::Result<()> {
         let elapsed = self.start.elapsed();
         let timestamp_us = elapsed.as_micros() as u64;
-        write_u64(&mut self.writer, timestamp_us)?;
-        write_touch_state(&mut self.writer, state)
+        let w = self.writer();
+        write_u64(w, timestamp_us)?;
+        write_touch_state(w, state)
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush()
+        match self.writer.as_mut() {
+            Some(w) => w.flush(),
+            None => Ok(()),
+        }
+    }
+
+    /// Flush and hand back the sink (e.g. the `Vec<u8>` to offer as a download).
+    pub fn into_inner(mut self) -> io::Result<W> {
+        self.flush()?;
+        Ok(self.writer.take().expect("recorder sink already taken"))
     }
 }
 
-impl Drop for Recorder {
+impl Recorder {
+    /// Record to a new file at `path`.
+    pub fn create(path: &str, extent_x: i32, extent_y: i32) -> io::Result<Self> {
+        let file = BufWriter::new(File::create(path)?);
+        Self::new(Box::new(file), extent_x, extent_y)
+    }
+}
+
+impl<W: Write> Drop for Recorder<W> {
     fn drop(&mut self) {
         let _ = self.flush();
     }
@@ -160,10 +186,18 @@ pub struct Recording {
 }
 
 impl Recording {
+    /// Load a recording from a file.
     pub fn load(path: &str) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
+        Self::read(BufReader::new(File::open(path)?))
+    }
 
+    /// Parse a recording held in memory.
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        Self::read(bytes)
+    }
+
+    /// Parse a recording from any reader.
+    pub fn read(mut reader: impl Read) -> io::Result<Self> {
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
         if &magic != MAGIC {
@@ -346,7 +380,7 @@ mod tests {
         };
 
         {
-            let mut rec = Recorder::new(path, 1920, 1080).unwrap();
+            let mut rec = Recorder::create(path, 1920, 1080).unwrap();
             rec.record(&state).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(10));
             rec.record(&state).unwrap();
@@ -365,12 +399,38 @@ mod tests {
     }
 
     #[test]
+    fn test_in_memory_round_trip() {
+        let state = TouchState {
+            touches: {
+                let mut t = [TouchData::default(); MAX_TOUCH_POINTS];
+                t[0] = sample_touch_data();
+                t
+            },
+            buttons: ButtonState {
+                left: true,
+                right: false,
+                middle: true,
+            },
+        };
+        let mut rec = Recorder::new(Vec::new(), 2833, 1723).unwrap();
+        rec.record(&state).unwrap();
+        rec.record(&TouchState::default()).unwrap();
+        let bytes = rec.into_inner().unwrap();
+
+        let loaded = Recording::from_bytes(&bytes).unwrap();
+        assert_eq!((loaded.extent_x, loaded.extent_y), (2833, 1723));
+        assert_eq!(loaded.frames.len(), 2);
+        assert_touch_state_eq(&loaded.frames[0].state, &state);
+        assert!(loaded.frames[0].timestamp_us <= loaded.frames[1].timestamp_us);
+    }
+
+    #[test]
     fn test_truncated_file() {
         let dir = std::env::temp_dir().join("tapview_test_truncated.tapv");
         let path = dir.to_str().unwrap();
 
         {
-            let mut rec = Recorder::new(path, 800, 600).unwrap();
+            let mut rec = Recorder::create(path, 800, 600).unwrap();
             let state = TouchState::default();
             for _ in 0..10 {
                 rec.record(&state).unwrap();

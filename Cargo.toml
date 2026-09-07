@@ -10,6 +10,8 @@ clap = { version = "4", features = ["derive"] }
 log = "0.4"
 # Drives the async HID layer to completion on native worker threads.
 pollster = "0.4"
+# std::time::Instant on native, performance.now() on wasm (std's panics there).
+web-time = "1.1"
 # Plain-text stderr logger for the CLI; no regex/humantime/color features needed.
 env_logger = { version = "0.11", default-features = false }
 

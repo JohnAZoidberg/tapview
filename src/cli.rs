@@ -443,7 +443,7 @@ pub fn main() {
     // Create recorder if --record was specified
     let recorder = if let Some(ref record_path) = cli.record {
         let (ex, ey) = record_extents.unwrap_or((0, 0));
-        match recording::Recorder::new(record_path, ex, ey) {
+        match recording::Recorder::create(record_path, ex, ey) {
             Ok(r) => {
                 log::info!("Recording to: {}", record_path);
                 Some(r)

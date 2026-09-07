@@ -8,7 +8,7 @@ use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use crate::recording::{Recorder, Recording};
 use crate::render;
 use std::sync::mpsc;
-use std::time::Instant;
+use web_time::Instant;
 
 const HISTORY_MAX: usize = 20;
 
