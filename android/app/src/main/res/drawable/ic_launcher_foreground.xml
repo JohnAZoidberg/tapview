@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 108dp adaptive-icon foreground; everything stays inside the 66dp safe
+     zone in the middle. A rounded touchpad outline and two finger dots. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Touchpad outline -->
+    <path
+        android:pathData="M30,34 h48 a6,6 0 0 1 6,6 v28 a6,6 0 0 1 -6,6 h-48 a6,6 0 0 1 -6,-6 v-28 a6,6 0 0 1 6,-6 z"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:fillColor="#00000000" />
+    <!-- First finger: magenta -->
+    <path
+        android:pathData="M46,54 m-6,0 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0 z"
+        android:fillColor="#FF00B6" />
+    <!-- Second finger: teal -->
+    <path
+        android:pathData="M64,50 m-5,0 a5,5 0 1 0 10,0 a5,5 0 1 0 -10,0 z"
+        android:fillColor="#00D5FF" />
+</vector>

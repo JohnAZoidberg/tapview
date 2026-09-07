@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base theme: no action bar; the egui UI draws everything itself.
+         The v35 overlay adds the edge-to-edge opt-out (the attribute only
+         exists there - Android 15 is also where edge-to-edge starts being
+         forced on targetSdk 35 apps). -->
+    <style name="Theme.Tapview" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+</resources>

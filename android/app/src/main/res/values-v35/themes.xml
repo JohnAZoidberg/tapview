@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 15 forces edge-to-edge on targetSdk 35 apps, which puts the
+         top of the egui UI underneath the status bar where it cannot be
+         tapped. winit 0.30 exposes no safe-area insets to draw around, so opt
+         the window out: laid out between the system bars, like a plain app. -->
+    <style name="Theme.Tapview" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

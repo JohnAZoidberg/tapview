@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- A USB-attached touchpad is the whole point of the app. -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="true" />
+
+    <application
+        android:label="Tapview"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Tapview">
+        <!-- configChanges must cover EVERYTHING an attached touchpad can flip
+             (touchscreen, keyboard, navigation, ...): any unhandled config
+             change makes Android recreate the activity, and a winit/eframe
+             NativeActivity cannot be recreated in-process - the event loop
+             wedges and the next tap ANRs. Plugging a pad in flips
+             touchscreen (and keyboard, for a combined device). -->
+        <activity
+            android:name=".TapviewActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|density|screenSize|smallestScreenSize|layoutDirection|colorMode|fontWeightAdjustment">
+            <!-- Which .so NativeActivity loads: libtapview_android.so. -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="tapview_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Offer this app when a known touchpad is plugged in; picking it
+                 (and checking "always") also grants USB access silently. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
+        </activity>
+    </application>
+</manifest>

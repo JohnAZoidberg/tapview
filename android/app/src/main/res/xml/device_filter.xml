@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Touchpads the app offers to open on plug-in. Attribute values are
+     decimal. Any other PTP touchpad still works: it just needs the USB
+     permission dialog once, from the in-app "Request access" button. -->
+<resources>
+    <!-- PixArt PIXA3854 in the Framework Laptop 13/16 touchpad: 093A:0343 -->
+    <usb-device vendor-id="2362" product-id="835" />
+    <!-- TODO: add other pads once seen in the Linux device list -->
+</resources>

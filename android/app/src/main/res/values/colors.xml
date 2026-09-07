@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launcher-icon background: the visualizer's white canvas would vanish
+         on a light launcher, so a dark slate instead. -->
+    <color name="ic_launcher_background">#1F2A44</color>
+</resources>
