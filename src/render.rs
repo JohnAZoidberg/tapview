@@ -2,14 +2,13 @@ use crate::config::ConfigHandle;
 use crate::heatmap::HeatmapFrame;
 use crate::libinput_state::{GestureKind, LibinputState};
 use crate::multitouch::{ButtonState, TouchData};
+use crate::ptp::MT_TOOL_PALM;
 use egui::{Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 pub const MAGENTA: Color32 = Color32::from_rgb(255, 0, 182);
 pub const TEAL: Color32 = Color32::from_rgb(0, 213, 255);
 pub const ORANGE: Color32 = Color32::from_rgb(255, 101, 0);
 pub const PALM_GRAY: Color32 = Color32::from_rgb(160, 160, 160);
-
-const MT_TOOL_PALM: i32 = 0x02;
 
 fn fade(color: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (255.0 * alpha) as u8)

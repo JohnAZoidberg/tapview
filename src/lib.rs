@@ -17,6 +17,7 @@ pub mod input;
 pub mod libinput_backend;
 pub mod libinput_state;
 pub mod multitouch;
+pub mod ptp;
 pub mod recording;
 pub mod render;
 pub mod session;

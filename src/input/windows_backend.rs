@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 const HID_USAGE_PAGE_DIGITIZER: u16 = 0x0D;
 const HID_USAGE_DIGITIZER_TOUCHPAD: u16 = 0x05;
-const MT_TOOL_PALM: i32 = 0x02;
+use crate::ptp::MT_TOOL_PALM;
 
 /// Windows RawInput-based touch backend.
 ///
