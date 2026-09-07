@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 pub mod evdev_backend;
+#[cfg(target_os = "linux")]
+pub mod hidraw_backend;
 #[cfg(target_os = "windows")]
 pub mod windows_backend;
 

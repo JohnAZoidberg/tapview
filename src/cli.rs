@@ -13,6 +13,8 @@ use crate::discovery::windows_discovery::WindowsDiscovery;
 use crate::discovery::DeviceDiscovery;
 #[cfg(target_os = "linux")]
 use crate::input::evdev_backend::EvdevBackend;
+#[cfg(target_os = "linux")]
+use crate::input::hidraw_backend::HidrawBackend;
 #[cfg(target_os = "windows")]
 use crate::input::windows_backend::WindowsBackend;
 use crate::input::InputBackend;
@@ -89,6 +91,20 @@ struct Cli {
     /// Record touch session to a binary file
     #[arg(long, conflicts_with = "play")]
     record: Option<String>,
+
+    /// Read touches from the touchpad's hidraw node through the PTP report
+    /// parser instead of evdev (needs hidraw access, like the heatmap). For
+    /// checking the parser against the kernel's interpretation; grabbing is
+    /// not possible in this mode.
+    #[cfg(target_os = "linux")]
+    #[arg(long, conflicts_with = "play")]
+    hidraw: bool,
+
+    /// Print the touchpad's HID report descriptor and then N raw hidraw input
+    /// reports as hex lines, and exit (for capturing parser test fixtures)
+    #[cfg(target_os = "linux")]
+    #[arg(long, value_name = "N", conflicts_with = "play")]
+    dump_hidraw: Option<usize>,
 
     /// Play back a recorded touch session (no device needed)
     #[arg(long, conflicts_with_all = ["record", "device", "libinput", "heatmap", "config"])]
@@ -177,6 +193,15 @@ pub fn main() {
         }
     };
     log::info!("Found touchpad: {}", device);
+
+    #[cfg(target_os = "linux")]
+    if let Some(n) = cli.dump_hidraw {
+        if let Err(e) = dump_hidraw(&device, n) {
+            log::error!("dump-hidraw: {}", e);
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
 
     // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
     #[cfg(target_os = "linux")]
@@ -440,91 +465,54 @@ pub fn main() {
     let (touch_tx, touch_rx) = mpsc::channel();
     let (grab_tx, grab_rx) = mpsc::channel::<GrabCommand>();
 
-    // Spawn input thread
-    let device_path = device.devnode.clone();
-
+    // Spawn input thread. `session_extents` are the coordinates the touches
+    // arrive in; `can_grab` whether the backend supports exclusive access.
     #[cfg(target_os = "linux")]
-    thread::spawn(move || {
-        let mut backend = match EvdevBackend::open(&device_path) {
-            Ok(b) => b,
+    let (session_extents, can_grab) = if cli.hidraw {
+        let hidraw_path = match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
+            Ok(p) => p,
             Err(e) => {
-                log::error!("Failed to open device: {}", e);
-                return;
+                log::error!("hidraw: failed to find sibling hidraw device: {}", e);
+                std::process::exit(1);
             }
         };
-
-        loop {
-            // Check for grab/ungrab commands
-            if let Ok(cmd) = grab_rx.try_recv() {
-                match cmd {
-                    GrabCommand::Grab => {
-                        if let Err(e) = backend.grab() {
-                            log::error!("Grab failed: {}", e);
-                        }
-                    }
-                    GrabCommand::Ungrab => {
-                        if let Err(e) = backend.ungrab() {
-                            log::error!("Ungrab failed: {}", e);
-                        }
-                    }
-                }
+        let backend = match HidrawBackend::open(&hidraw_path) {
+            Ok(b) => b,
+            Err(e) => {
+                log::error!("hidraw: {}", e);
+                std::process::exit(1);
             }
-
-            match backend.poll_events() {
-                Ok(Some(state)) => {
-                    let _ = touch_tx.send(state);
-                }
-                Ok(None) => {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(e) => {
-                    log::error!("Input error: {}", e);
-                    break;
-                }
-            }
-        }
-    });
+        };
+        let (x_max, y_max) = backend.extents();
+        log::info!(
+            "hidraw: reading touches from {} (report {}, {} finger slots, up to {} contacts)",
+            hidraw_path.display(),
+            backend.layout().report_id,
+            backend.layout().fingers.len(),
+            backend.layout().contact_count_max
+        );
+        log::info!("axis: HID report extents: x=0..{}, y=0..{}", x_max, y_max);
+        thread::spawn(move || run_input_thread(backend, grab_rx, touch_tx));
+        (Some((x_max, y_max)), false)
+    } else {
+        let device_path = device.devnode.clone();
+        thread::spawn(move || match EvdevBackend::open(&device_path) {
+            Ok(backend) => run_input_thread(backend, grab_rx, touch_tx),
+            Err(e) => log::error!("Failed to open device: {}", e),
+        });
+        (evdev_extents, true)
+    };
 
     #[cfg(target_os = "windows")]
-    thread::spawn(move || {
-        let mut backend = match WindowsBackend::open(&device_path) {
-            Ok(b) => b,
-            Err(e) => {
-                log::error!("Failed to open device: {}", e);
-                return;
-            }
-        };
-
-        loop {
-            if let Ok(cmd) = grab_rx.try_recv() {
-                match cmd {
-                    GrabCommand::Grab => {
-                        if let Err(e) = backend.grab() {
-                            log::error!("Grab failed: {}", e);
-                        }
-                    }
-                    GrabCommand::Ungrab => {
-                        if let Err(e) = backend.ungrab() {
-                            log::error!("Ungrab failed: {}", e);
-                        }
-                    }
-                }
-            }
-
-            match backend.poll_events() {
-                Ok(Some(state)) => {
-                    let _ = touch_tx.send(state);
-                }
-                Ok(None) => {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(e) => {
-                    log::error!("Input error: {}", e);
-                    break;
-                }
-            }
-        }
-    });
+    let (session_extents, can_grab) = {
+        let device_path = device.devnode.clone();
+        thread::spawn(move || match WindowsBackend::open(&device_path) {
+            Ok(backend) => run_input_thread(backend, grab_rx, touch_tx),
+            Err(e) => log::error!("Failed to open device: {}", e),
+        });
+        // Windows doesn't support touchpad grab
+        (evdev_extents, false)
+    };
 
     // Spawn libinput/interpreted input backend thread (enabled by default)
     #[cfg(target_os = "linux")]
@@ -556,21 +544,12 @@ pub fn main() {
     }
     let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
     let config_handle = ptp_config.map(Ptp::into_handle);
-    // Only the evdev backend can grab the device; on Windows the grab
-    // channel exists for the thread loop's sake but the UI never uses it.
-    #[cfg(target_os = "linux")]
-    let grab_tx = Some(grab_tx);
-    #[cfg(not(target_os = "linux"))]
-    let grab_tx = {
-        drop(grab_tx);
-        None
-    };
     let session = Session {
         touch_rx,
-        grab_tx,
+        grab_tx: can_grab.then_some(grab_tx),
         heatmap_rx,
         config: config_handle,
-        extents: evdev_extents,
+        extents: session_extents,
         recorder,
     };
     let title = if is_recording {
@@ -599,6 +578,76 @@ pub fn main() {
         }),
     )
     .expect("Failed to run eframe");
+}
+
+/// The input thread body: poll the backend for touch frames, forward them to
+/// the UI, and act on grab/ungrab requests in between.
+fn run_input_thread<B: InputBackend>(
+    mut backend: B,
+    grab_rx: mpsc::Receiver<GrabCommand>,
+    touch_tx: mpsc::Sender<crate::input::TouchState>,
+) {
+    loop {
+        // Check for grab/ungrab commands
+        if let Ok(cmd) = grab_rx.try_recv() {
+            match cmd {
+                GrabCommand::Grab => {
+                    if let Err(e) = backend.grab() {
+                        log::error!("Grab failed: {}", e);
+                    }
+                }
+                GrabCommand::Ungrab => {
+                    if let Err(e) = backend.ungrab() {
+                        log::error!("Ungrab failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        match backend.poll_events() {
+            Ok(Some(state)) => {
+                if touch_tx.send(state).is_err() {
+                    // UI gone
+                    break;
+                }
+            }
+            Ok(None) => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => {
+                log::error!("Input error: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+/// `--dump-hidraw N`: the report descriptor, then N raw input reports, as
+/// hex lines on stdout. Redirect into a file to capture a parser fixture.
+#[cfg(target_os = "linux")]
+fn dump_hidraw(device: &discovery::DeviceInfo, count: usize) -> Result<(), String> {
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+    let hidraw_path = heatmap::discovery::find_sibling_hidraw(&device.devnode)
+        .map_err(|e| format!("failed to find sibling hidraw device: {}", e))?;
+    let desc = crate::hid::linux::read_report_descriptor(&hidraw_path)
+        .map_err(|e| format!("failed to read report descriptor: {}", e))?;
+    let mut backend = HidrawBackend::open(&hidraw_path).map_err(|e| e.to_string())?;
+    log::info!(
+        "dump-hidraw: {} reports from {} (touch it now)",
+        count,
+        hidraw_path.display()
+    );
+    println!("# descriptor {}", hex(&desc));
+    let mut dumped = 0;
+    while dumped < count {
+        if let Some(n) = backend.read_raw(1000).map_err(|e| e.to_string())? {
+            println!("{}", hex(&backend.buffer()[..n]));
+            dumped += 1;
+        }
+    }
+    Ok(())
 }
 
 /// A discovered PTP configuration device, initialised on the main thread so

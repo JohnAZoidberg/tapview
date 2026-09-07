@@ -105,6 +105,8 @@ sudo ./target/release/tapview [OPTIONS]
 | `-l, --libinput` | Show libinput pointer/scroll/gesture data in a right side panel |
 | `--record <path>` | Record touch session to a binary file |
 | `--play <path>` | Play back a recorded touch session (no device needed) |
+| `--hidraw` | Linux: read touches from the hidraw node through tapview's own PTP report parser instead of evdev (same `hidraw` access as the heatmap; no grab). For checking the parser against the kernel |
+| `--dump-hidraw <N>` | Linux: print the HID report descriptor and N raw input reports as hex, then exit |
 | `-h, --help` | Show help |
 
 ### Controls
