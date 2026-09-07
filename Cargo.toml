@@ -80,6 +80,7 @@ features = [
     "Win32_Graphics_Gdi",
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
     "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
     "Win32_Security",
