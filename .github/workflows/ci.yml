@@ -28,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy -- -D warnings
@@ -58,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy -- -D warnings
@@ -71,3 +71,52 @@ jobs:
         with:
           name: tapview-windows-x86_64
           path: target/release/tapview.exe
+
+  check-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-linux-android
+
+      # Also caches ~/.cargo/bin, so cargo-ndk is a no-op after the first run.
+      - uses: Swatinem/rust-cache@v2
+
+      # The runner image ships an Android SDK (ANDROID_HOME is set) but pins
+      # no NDK; install the one the app is developed against so builds stay
+      # reproducible, plus cargo-ndk to drive the Rust cross-build from Gradle.
+      - name: Install NDK and cargo-ndk
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
+          cargo install cargo-ndk --locked
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The full lib for the Android target, warnings denied - this covers
+      # the cfg(target_os = "android") code (android_hid, the JNI seams) that
+      # the desktop jobs never compile.
+      - name: Clippy (Android target)
+        run: cargo clippy --lib --target aarch64-linux-android -- -D warnings
+
+      # ./gradlew assembleDebug; the runner's ANDROID_HOME is honored by the
+      # Makefile's ?= default.
+      - name: Build APK
+        run: make -C android build
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: tapview-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
