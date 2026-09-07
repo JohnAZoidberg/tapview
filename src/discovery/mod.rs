@@ -142,33 +142,61 @@ impl DeviceInfo {
             Integration::Unknown => "-",
         }
     }
+
+    /// Short device identifier shown in `--list` and accepted by `--device`.
+    ///
+    /// On Linux this is the devnode basename (`event8`). Windows HID interface
+    /// paths are a single long path component, so trim the parts that are the
+    /// same for every device: the `\\?\` prefix and the trailing HID
+    /// interface-class GUID.
+    pub fn display_id(&self) -> String {
+        let raw = self.devnode.to_string_lossy();
+        if let Some(rest) = raw.strip_prefix(r"\\?\") {
+            let trimmed = rest.rfind("#{").map_or(rest, |i| &rest[..i]);
+            return trimmed.to_string();
+        }
+        self.devnode
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| raw.into_owned())
+    }
 }
 
 /// Render the discovered devices as an aligned table for `--list`.
 ///
-/// Kept narrow on purpose (only the devnode basename, no index column) so
-/// it fits in a small terminal.
+/// The index in the first column is what `--device` and the interactive prompt
+/// take, so a device is always selectable with a single digit — Windows HID
+/// paths are far too long to retype. They are also too long to read, so the
+/// DEVICE column is only shown with `--verbose` there; on Linux the short
+/// `eventN` name is always worth showing. It comes last either way, so a
+/// 100-character path does not push the other columns off screen.
 ///
 /// ```text
-/// DEVICE   NAME                   BUS  VID:PID
-/// event8   PIXA3854:00 093A:0343  I2C  093a:0343
+/// #  NAME                   BUS  VID:PID    DEVICE
+/// 1  PIXA3854:00 093A:0343  I2C  093a:0343  event8
 /// ```
-pub fn format_device_table(devices: &[DeviceInfo]) -> String {
-    let header = ["DEVICE", "NAME", "BUS", "VID:PID"];
-    let rows: Vec<[String; 4]> = devices
+pub fn format_device_table(devices: &[DeviceInfo], verbose: bool) -> String {
+    let show_device = verbose || !cfg!(target_os = "windows");
+
+    let mut header = vec!["#", "NAME", "BUS", "VID:PID"];
+    if show_device {
+        header.push("DEVICE");
+    }
+
+    let rows: Vec<Vec<String>> = devices
         .iter()
-        .map(|d| {
-            let devnode = d
-                .devnode
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| d.devnode.display().to_string());
-            [
-                devnode,
+        .enumerate()
+        .map(|(i, d)| {
+            let mut row = vec![
+                (i + 1).to_string(),
                 d.name.clone().unwrap_or_else(|| "-".to_string()),
                 d.bus.to_string(),
                 d.vid_pid_string(),
-            ]
+            ];
+            if show_device {
+                row.push(d.display_id());
+            }
+            row
         })
         .collect();
 
@@ -204,15 +232,25 @@ pub fn format_device_table(devices: &[DeviceInfo]) -> String {
     out
 }
 
-/// Look up a device by user-supplied identifier: the full devnode path
-/// (`/dev/input/event8`), its basename as shown by `--list` (`event8`), or
-/// just the event number (`8`).
+/// Look up a device by user-supplied identifier: its index in the `--list`
+/// table (`1`), the identifier from the DEVICE column (`event8`), the full
+/// devnode path (`/dev/input/event8`), or — where that is not already an
+/// index — the bare event number (`8`).
 pub fn find_device<'a>(devices: &'a [DeviceInfo], wanted: &str) -> Option<&'a DeviceInfo> {
     let wanted = wanted.trim();
+
+    // Index first: it is what the table shows next to each device.
+    if let Some(n) = wanted.parse::<usize>().ok().filter(|n| *n >= 1) {
+        if let Some(d) = devices.get(n - 1) {
+            return Some(d);
+        }
+    }
+
     let path = std::path::Path::new(wanted);
     let as_event = wanted.parse::<u32>().ok().map(|n| format!("event{}", n));
     devices.iter().find(|d| {
         d.devnode == path
+            || d.display_id() == wanted
             || d.devnode.file_name() == Some(path.as_os_str())
             || matches!(
                 (&as_event, d.devnode.file_name()),
@@ -221,26 +259,23 @@ pub fn find_device<'a>(devices: &'a [DeviceInfo], wanted: &str) -> Option<&'a De
     })
 }
 
-/// Show the device table and ask the user to pick one on the terminal.
+/// Show the device table and ask the user to pick one by index (or by any
+/// identifier `find_device` accepts) on the terminal.
 /// Prompts again on invalid input; returns `None` on EOF (Ctrl-D).
 /// Everything goes to stderr so stdout stays clean for program output.
-pub fn prompt_for_device(devices: &[DeviceInfo]) -> Option<DeviceInfo> {
+pub fn prompt_for_device(devices: &[DeviceInfo], verbose: bool) -> Option<DeviceInfo> {
     use std::io::{BufRead, Write};
 
     eprintln!("Multiple touchpads found:\n");
-    eprint!("{}", format_device_table(devices));
+    eprint!("{}", format_device_table(devices, verbose));
     eprintln!();
 
-    let default = devices[0]
-        .devnode
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| devices[0].devnode.display().to_string());
+    let default = "1";
 
     let stdin = std::io::stdin();
     let mut line = String::new();
     loop {
-        eprint!("Select device [{}]: ", default);
+        eprint!("Select device by number [{}]: ", default);
         let _ = std::io::stderr().flush();
 
         line.clear();
@@ -265,4 +300,79 @@ pub fn prompt_for_device(devices: &[DeviceInfo]) -> Option<DeviceInfo> {
 
 pub trait DeviceDiscovery {
     fn find_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dev(devnode: &str) -> DeviceInfo {
+        DeviceInfo {
+            devnode: PathBuf::from(devnode),
+            name: None,
+            bus: Bus::Unknown,
+            integration: Integration::Unknown,
+            vendor_id: None,
+            product_id: None,
+        }
+    }
+
+    #[test]
+    fn display_id_trims_windows_hid_paths() {
+        let d =
+            dev(r"\\?\hid#pixa3854&col02#4&10d8260e&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}");
+        assert_eq!(d.display_id(), "hid#pixa3854&col02#4&10d8260e&0&0001");
+    }
+
+    #[test]
+    fn display_id_is_basename_on_unix_paths() {
+        assert_eq!(dev("/dev/input/event8").display_id(), "event8");
+    }
+
+    #[test]
+    fn verbose_table_shows_the_device_column() {
+        let devices = [dev("/dev/input/event8")];
+        assert!(format_device_table(&devices, true).contains("DEVICE"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_table_hides_the_device_column_by_default() {
+        let devices = [dev(
+            r"\\?\hid#pixa3854&col02#4&10d8260e&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+        )];
+        let table = format_device_table(&devices, false);
+        assert!(!table.contains("DEVICE"));
+        assert!(!table.contains("pixa3854"));
+    }
+
+    #[test]
+    fn find_device_by_index() {
+        let devices = [dev("/dev/input/event8"), dev("/dev/input/event12")];
+        assert_eq!(
+            find_device(&devices, "2").map(|d| d.devnode.clone()),
+            Some(PathBuf::from("/dev/input/event12"))
+        );
+        assert!(find_device(&devices, "0").is_none());
+        assert!(find_device(&devices, "3").is_none());
+    }
+
+    #[test]
+    fn find_device_by_path_and_display_id() {
+        let win =
+            r"\\?\hid#pixa3854&col02#4&10d8260e&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+        let devices = [dev("/dev/input/event8"), dev(win)];
+        assert!(find_device(&devices, "event8").is_some());
+        assert!(find_device(&devices, "/dev/input/event8").is_some());
+        assert!(find_device(&devices, win).is_some());
+        assert!(find_device(&devices, "hid#pixa3854&col02#4&10d8260e&0&0001").is_some());
+        assert!(find_device(&devices, "event9").is_none());
+    }
+
+    #[test]
+    fn find_device_falls_back_to_event_number() {
+        // "8" is not a valid index here, so it means event8.
+        let devices = [dev("/dev/input/event8")];
+        assert!(find_device(&devices, "8").is_some());
+    }
 }

@@ -84,7 +84,7 @@ struct Cli {
     #[arg(long, value_name = "LEVEL")]
     set_click_force: Option<u8>,
 
-    /// Use a specific device instead of auto-detection (path, name or event number from --list, e.g. event8 or 8)
+    /// Use a specific device instead of auto-detection (number or DEVICE column from --list, e.g. 1 or event8)
     #[arg(long)]
     device: Option<String>,
 
@@ -167,7 +167,7 @@ pub fn main() {
     };
 
     if cli.list {
-        print!("{}", discovery::format_device_table(&devices));
+        print!("{}", discovery::format_device_table(&devices, cli.verbose));
         std::process::exit(0);
     }
 
@@ -184,7 +184,7 @@ pub fn main() {
         // desktop menu): take the first (internal touchpads sort first).
         devices[0].clone()
     } else {
-        match discovery::prompt_for_device(&devices) {
+        match discovery::prompt_for_device(&devices, cli.verbose) {
             Some(d) => d,
             None => {
                 log::error!("No device selected.");
