@@ -290,26 +290,52 @@ impl eframe::App for TapviewApp {
             }
         }
 
-        // Show config left panel if available
+        // A portrait viewport (a phone) stacks everything vertically: the
+        // touchpad on top, the heatmap under it at its own aspect ratio, and
+        // the config panel as a scrollable strip at the bottom. Side panels
+        // would leave the pad a sliver.
+        let screen = ctx.screen_rect();
+        let portrait = screen.height() > screen.width();
+
+        // Show config panel if available (bottom panels added first sit
+        // outermost, so in portrait this is the very bottom)
         if let Some(config) = self.session.as_mut().and_then(|s| s.config.as_mut()) {
             // Apply results (and reverts) of writes the worker finished
             config.pump();
-            egui::SidePanel::left("config_panel")
-                .default_width(200.0)
-                .min_width(160.0)
-                .show(ctx, |ui| {
-                    render::draw_config_panel(ui, config);
-                });
+            if portrait {
+                egui::TopBottomPanel::bottom("config_panel")
+                    .resizable(true)
+                    .default_height((screen.height() * 0.22).clamp(120.0, 260.0))
+                    .max_height(screen.height() * 0.5)
+                    .show(ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            render::draw_config_panel(ui, config);
+                        });
+                    });
+            } else {
+                egui::SidePanel::left("config_panel")
+                    .default_width(200.0)
+                    .min_width(160.0)
+                    .show(ctx, |ui| {
+                        render::draw_config_panel(ui, config);
+                    });
+            }
         }
 
         // Show heatmap bottom panel if active
         if let Some(frame) = &self.heatmap_frame {
-            egui::TopBottomPanel::bottom("heatmap_panel")
+            let mut panel = egui::TopBottomPanel::bottom("heatmap_panel")
                 .default_height(200.0)
-                .min_height(100.0)
-                .show(ctx, |ui| {
-                    render::draw_heatmap_panel(ui, frame);
-                });
+                .min_height(100.0);
+            if portrait && frame.cols > 0 {
+                // Full width at the sensor matrix's aspect ratio, capped so
+                // the touchpad keeps at least half the screen
+                let height = screen.width() * frame.rows as f32 / frame.cols as f32 + 30.0;
+                panel = panel.exact_height(height.min(screen.height() * 0.35));
+            }
+            panel.show(ctx, |ui| {
+                render::draw_heatmap_panel(ui, frame);
+            });
         }
 
         // Show libinput side panel if we have a receiver

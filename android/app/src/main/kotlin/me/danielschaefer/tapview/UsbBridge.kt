@@ -13,6 +13,7 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -59,6 +60,7 @@ class UsbBridge(private val activity: Activity) {
         private const val REPORT_TYPE_FEATURE = 0x0300
 
         private const val CONTROL_TIMEOUT_MS = 1000
+        private const val TAG = "tapview"
         private const val MAX_DESCRIPTOR = 4096
     }
 
@@ -111,6 +113,56 @@ class UsbBridge(private val activity: Activity) {
     private fun device(path: String): UsbDevice? =
         manager.deviceList.values.firstOrNull { it.deviceName == path }
 
+    /**
+     * Claim an interface, detaching the kernel driver. Phones can leave an
+     * attached device unconfigured (seen on a Fairphone 6: the kernel had
+     * rejected the pad's configuration - most likely its 250 mA bMaxPower
+     * against the OTG port's power budget - and every claim then fails with
+     * ENOENT because no interface exists in the active configuration). On a
+     * failed claim, select the first configuration explicitly (the kernel
+     * only warns about the budget on an explicit set) and try once more.
+     */
+    private fun claim(dev: UsbDevice, conn: UsbDeviceConnection, iface: UsbInterface): Boolean {
+        if (conn.claimInterface(iface, true)) return true
+        if (dev.configurationCount == 0) return false
+        val conf = dev.getConfiguration(0)
+        // SET_CONFIGURATION itself can fail on a marginal link; a few tries.
+        for (attempt in 1..3) {
+            val ok = conn.setConfiguration(conf)
+            Log.w(TAG, "claim of interface ${iface.id} failed; setConfiguration(id=${conf.id}, maxPower=${conf.maxPower}mA) attempt $attempt -> $ok")
+            if (ok) break
+            Thread.sleep(100)
+        }
+        return conn.claimInterface(iface, true)
+    }
+
+    /**
+     * HID report-descriptor length per interface number, from the HID class
+     * descriptors (type 0x21) inside the raw configuration descriptor.
+     * GET_DESCRIPTOR(Report) must ask for exactly this many bytes: Zephyr's
+     * USB stack (ZMK firmware) stalls requests whose wLength exceeds its
+     * request buffer, and Linux's usbhid never asks for more than this.
+     */
+    private fun reportDescriptorLengths(conn: UsbDeviceConnection): Map<Int, Int> {
+        val raw = conn.rawDescriptors ?: return emptyMap()
+        val out = HashMap<Int, Int>()
+        var iface = -1
+        var i = 0
+        while (i + 1 < raw.size) {
+            val len = raw[i].toInt() and 0xFF
+            val type = raw[i + 1].toInt() and 0xFF
+            if (len < 2 || i + len > raw.size) break
+            when (type) {
+                0x04 -> iface = raw[i + 2].toInt() and 0xFF // interface descriptor: bInterfaceNumber
+                0x21 -> if (len >= 9 && iface >= 0) { // HID descriptor: first report descriptor's wDescriptorLength
+                    out[iface] = (raw[i + 7].toInt() and 0xFF) or ((raw[i + 8].toInt() and 0xFF) shl 8)
+                }
+            }
+            i += len
+        }
+        return out
+    }
+
     private fun hasHid(dev: UsbDevice): Boolean =
         (0 until dev.interfaceCount).any {
             dev.getInterface(it).interfaceClass == UsbConstants.USB_CLASS_HID
@@ -147,19 +199,38 @@ class UsbBridge(private val activity: Activity) {
         val dev = device(path) ?: return null
         if (!manager.hasPermission(dev)) return null
         val conn = manager.openDevice(dev) ?: return null
+        val lengths = reportDescriptorLengths(conn)
         val sb = StringBuilder()
         try {
             for (i in 0 until dev.interfaceCount) {
                 val iface = dev.getInterface(i)
                 if (iface.interfaceClass != UsbConstants.USB_CLASS_HID) continue
-                if (!conn.claimInterface(iface, true)) continue
+                if (!claim(dev, conn, iface)) {
+                    Log.w(TAG, "descriptors: $path interface ${iface.id}: claimInterface failed")
+                    continue
+                }
                 try {
-                    val desc = ByteArray(MAX_DESCRIPTOR)
-                    val n = conn.controlTransfer(
-                        0x81, REQ_GET_DESCRIPTOR, DESC_TYPE_REPORT shl 8, iface.id,
-                        desc, desc.size, CONTROL_TIMEOUT_MS,
-                    )
-                    if (n <= 0) continue
+                    val want = lengths[iface.id] ?: MAX_DESCRIPTOR
+                    val desc = ByteArray(want)
+                    // A marginal link fails long control transfers with EPROTO
+                    // now and then; a fresh request often gets through.
+                    var n = -1
+                    var attempts = 0
+                    while (n < 0 && attempts < 8) {
+                        if (attempts > 0) Thread.sleep(100)
+                        n = conn.controlTransfer(
+                            0x81, REQ_GET_DESCRIPTOR, DESC_TYPE_REPORT shl 8, iface.id,
+                            desc, desc.size, CONTROL_TIMEOUT_MS,
+                        )
+                        attempts++
+                    }
+                    Log.i(TAG, "descriptors: $path interface ${iface.id}: report descriptor $n of $want bytes after $attempts attempt(s)")
+                    if (n <= 0) {
+                        // Tell Rust which interface failed and how long the
+                        // descriptor should be: "iface \t !length"
+                        sb.append(i).append("\t!").append(want).append('\n')
+                        continue
+                    }
                     sb.append(i).append('\t')
                     for (b in 0 until n) sb.append(String.format("%02x", desc[b].toInt() and 0xFF))
                     sb.append('\n')
@@ -205,7 +276,7 @@ class UsbBridge(private val activity: Activity) {
         val iface = dev.getInterface(ifaceIndex)
         if (iface.interfaceClass != UsbConstants.USB_CLASS_HID) return NO_INTERFACE
         val conn = manager.openDevice(dev) ?: return GONE
-        if (!conn.claimInterface(iface, true)) {
+        if (!claim(dev, conn, iface)) {
             conn.close()
             return CLAIM_FAILED
         }

@@ -301,10 +301,33 @@ fn find_touchpad_interface(path: &str) -> io::Result<Option<(i32, Vec<u8>)>> {
         let Some((iface, hex)) = line.split_once('\t') else {
             continue;
         };
+        if hex.starts_with('!') {
+            // The bridge could claim this interface but not read its descriptor.
+            log::warn!(
+                "usb: {} interface {}: report descriptor unreadable",
+                path,
+                iface
+            );
+            continue;
+        }
         let (Ok(iface), Some(desc)) = (iface.parse::<i32>(), decode_hex(hex)) else {
             continue;
         };
-        if ReportLayout::parse(&desc).has_application_collection(DIGITIZER_PAGE, USAGE_TOUCH_PAD) {
+        let layout = ReportLayout::parse(&desc);
+        let apps: Vec<String> = layout
+            .collections
+            .iter()
+            .filter(|c| c.kind == crate::hid::Collection::APPLICATION)
+            .map(|c| format!("{:04x}:{:04x}", c.usage_page, c.usage))
+            .collect();
+        log::info!(
+            "usb: {} interface {}: {} byte descriptor, application collections [{}]",
+            path,
+            iface,
+            desc.len(),
+            apps.join(" ")
+        );
+        if layout.has_application_collection(DIGITIZER_PAGE, USAGE_TOUCH_PAD) {
             return Ok(Some((iface, desc)));
         }
     }
