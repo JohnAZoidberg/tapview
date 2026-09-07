@@ -161,6 +161,22 @@ Build as your user, then run the binary with sudo:
 nix develop -c cargo build && nix develop -c bash -c 'sudo env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ./target/debug/tapview --record /tmp/test.tapv'
 ```
 
+## On Android
+
+Tapview also builds as an Android app for phones and tablets with a USB-C
+(OTG) port: plug a touchpad in and the same UI shows its contacts, heatmap
+and PTP configuration. The pad is read as a raw USB HID device (Android has
+no evdev or hidraw for apps), which also takes it away from the system
+pointer while the app has it open. Bluetooth pads and the libinput panel are
+not available there. Build and install with
+
+```
+make -C android flash
+```
+
+See [android/README.md](android/README.md) for the one-time SDK/NDK setup,
+the Makefile targets and the USB permission flow.
+
 ## Architecture
 
 Two-thread design:
