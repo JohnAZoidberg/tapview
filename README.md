@@ -177,6 +177,48 @@ make -C android flash
 See [android/README.md](android/README.md) for the one-time SDK/NDK setup,
 the Makefile targets and the USB permission flow.
 
+## In the browser
+
+Tapview also runs as a web page: the same app compiled to WebAssembly, with
+the touchpad reached through
+[WebHID](https://developer.mozilla.org/en-US/docs/Web/API/WebHID_API)
+instead of evdev and hidraw (`src/web_hid.rs`, see `plans/web.md`). Every
+push to `main` deploys it to GitHub Pages:
+<https://johnazoidberg.github.io/tapview/>. To run it locally:
+
+```
+rustup target add wasm32-unknown-unknown
+cargo install trunk   # or download a release binary; nix: `nix develop .#web`
+trunk serve           # http://localhost:8080 (localhost is a secure context)
+```
+
+`trunk build --release` writes the same static site to `dist/`, which any
+file server can host (`python -m http.server -d dist`) — just not `file://`,
+and anywhere beyond localhost must be HTTPS or WebHID stays disabled.
+
+Browser differences, all inherent to the platform:
+
+- **Chromium on the desktop only** (Chrome, Edge, Opera): no other browser
+  ships WebHID. Elsewhere the page can still play the bundled demo recording.
+- **Linux needs hidraw access.** Chrome opens `/dev/hidraw*` as the user, so
+  the same `hidraw` group membership the heatmap needs applies — and only
+  that; the `input` group is not needed.
+- **The touchpad is granted, not discovered.** Press **Connect touchpad** and
+  pick it in the browser's prompt. The grant persists across visits (the page
+  re-takes it on load and opens the pad when it is the only one granted).
+  **Disconnect** in the bar above a live view returns to the list, where
+  another granted pad can be opened or a new one connected. Windows may
+  refuse to open the touchpad collection at all; Linux is the tested
+  platform.
+- **Touches come from the raw PTP reports**, parsed like on Android, so the
+  system cursor keeps working and palms show up as the firmware flags them.
+  Heatmap and PTP configuration work as on the desktop.
+- **No grab, no libinput.** A page cannot take exclusive hold of the pad. The
+  right-hand panel shows what the browser makes of it instead: pointer
+  motion, scrolling, and pinch (delivered as ctrl+wheel), only while the
+  pointer is over the page.
+- **No recording to a file yet.** Playback of the bundled demo works.
+
 ## Architecture
 
 Two-thread design:

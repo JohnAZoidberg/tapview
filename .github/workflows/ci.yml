@@ -45,6 +45,40 @@ jobs:
           name: tapview-linux-x86_64
           path: target/release/tapview
 
+  # The cfg(target_arch = "wasm32") code (web_hid, the connect flow) that no
+  # other job compiles, warnings denied, then the site itself via trunk. Only
+  # the library and the bin exist on wasm — --all-targets would also try the
+  # native-only tests.
+  check-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (wasm target)
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Install trunk
+        run: |
+          curl -sSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xzf - -C "$HOME/.cargo/bin" trunk
+
+      - name: Build the site
+        run: trunk build --release
+
+      - name: Upload the site
+        uses: actions/upload-artifact@v6
+        with:
+          name: tapview-web
+          path: dist
+
   check-windows:
     runs-on: windows-latest
     steps:

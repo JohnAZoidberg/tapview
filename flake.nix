@@ -44,6 +44,11 @@
           targets = [ "aarch64-linux-android" ];
         };
 
+        # Rust toolchain with the browser target (see plans/web.md)
+        rustToolchainWeb = pkgs.rust-bin.stable.latest.default.override {
+          targets = [ "wasm32-unknown-unknown" ];
+        };
+
         # MinGW cross-compiler toolchain
         mingw = pkgs.pkgsCross.mingwW64.stdenv.cc;
         mingwPthreads = pkgs.pkgsCross.mingwW64.windows.pthreads;
@@ -145,6 +150,20 @@
             export ANDROID_HOME="''${ANDROID_HOME:-$HOME/Android}"
             export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
             echo "Android shell: make -C android build   (SDK/NDK from $ANDROID_HOME, not nix)"
+          '';
+        };
+
+        # Browser build: trunk drives cargo for wasm32, wasm-bindgen (which it
+        # downloads to match Cargo.lock) and wasm-opt (binaryen).
+        devShells.web = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            rustToolchainWeb
+            trunk
+            binaryen
+          ];
+
+          shellHook = ''
+            echo "Web shell: trunk serve   (http://localhost:8080), trunk build --release   (dist/)"
           '';
         };
 
