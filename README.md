@@ -1,14 +1,20 @@
 # Tapview
 
-A Linux touchpad visualizer. Shows multitouch contact points in real time using the kernel's MT Protocol B events. Useful for debugging touchpad behavior, testing palm rejection, and understanding how your touchpad reports touches.
+A touchpad visualizer. Shows multitouch contact points in real time, the raw capacitive heatmap of PixArt pads, and the Precision Touchpad (PTP) configuration the firmware exposes. Useful for debugging touchpad behavior, testing palm rejection, and understanding how your touchpad reports touches.
+
+It runs natively on Linux (the primary platform) and Windows, as an [Android app](#on-android) for phones with USB host support, and [in the browser](#in-the-browser) through WebHID.
 
 ## Tested on
 
-| Hardware            | Raw Events | libinput | Heatmap |
-|---------------------|------------|----------|---------|
-| Framework Laptop 12 | Working    | Working  | Working |
-| Framework Laptop 13 | Working    | Working  | Working |
-| Framework Laptop 16 | Working    | Working  | Working |
+| Hardware            | Platform             | Raw Events | Interpreted panel | Heatmap | PTP config |
+|---------------------|----------------------|------------|-------------------|---------|------------|
+| Framework Laptop 12 | Linux                | Working    | Working           | Working | Working    |
+| Framework Laptop 13 | Linux                | Working    | Working           | Working | Working    |
+| Framework Laptop 16 | Linux                | Working    | Working           | Working | Working    |
+| Framework Laptop    | Linux, Chrome        | Working    | Browser events    | Working | Working    |
+| Touchpad KB (daisy) | Android (Fairphone 6)| Working    | n/a               | Working | Working    |
+
+Touchpads attached over Bluetooth work on Linux and Windows through the normal HID stack. The heatmap is noticeably slower there (a few frames per second instead of around ten) because every frame is a series of feature-report round trips over the link.
 
 ## What it does
 
@@ -19,6 +25,18 @@ A Linux touchpad visualizer. Shows multitouch contact points in real time using 
 - Shows press state (filled dot) and double-tap state (ring)
 - Estimates the report rate in the top-right corner while a finger is down (see below)
 - Optionally grabs exclusive access so touches don't move the system cursor
+- Shows what the system makes of the same touches in a right-hand panel: pointer motion, scrolling and gestures from libinput on Linux, from a mouse hook on Windows
+- Renders the raw capacitive heatmap of PixArt touchpad controllers (see below)
+- Reads and writes the pad's PTP configuration: input mode, surface and button switches, latency mode, click force and haptic intensity (see below)
+- Records a touch session to a file and plays it back, with no device needed
+
+### Heatmap
+
+Touchpads built on a PixArt controller (PJP274, PJP343, PJP255, PJP215, PLP239, PCT1036, which covers the Framework laptops) expose their raw capacitance matrix through vendor feature reports on the pad's HID interface. Tapview polls it and draws every sensor cell as a colored square next to the touch view, so a palm, a hovering finger or a noisy cell is visible even when the firmware reports no contact. The heatmap is enabled automatically when a supported chip is found; `--heatmap` insists on it, `--no-heatmap` turns it off, and `--heatmap-cols` overrides the column count if a frame comes out with the wrong stride. On Linux the reports go through the touchpad's `/dev/hidraw*` node, which is why the `hidraw` group is needed.
+
+### PTP configuration
+
+Precision Touchpads describe their settings in the HID report descriptor, and tapview reads that descriptor to find out which fields the pad has and which are writable. The panel shows the current input mode (mouse or touchpad), whether the surface and the buttons report, the maximum contact count, the latency mode, and, on pads that have them, sliders for the click-force threshold and haptic intensity. Changes are written to the device as you make them. The two write-only fields can also be set from the command line without opening the UI (`--set-click-force`, `--set-haptic-intensity`), and `--info` prints everything the descriptor says about the device. The panel is enabled automatically when the pad has any configurable field; `--config` insists on it and `--no-config` hides it.
 
 ### Report rate
 
@@ -86,7 +104,7 @@ Requires read access to the touchpad's `/dev/input/event*` device. Typically thi
 # For /dev/input/event* access (evdev)
 sudo usermod -aG input $USER
 
-# For /dev/hidraw* access (heatmap feature)
+# For /dev/hidraw* access (heatmap, PTP configuration, --hidraw)
 sudo usermod -aG hidraw $USER
 ```
 
@@ -112,12 +130,22 @@ sudo ./target/release/tapview [OPTIONS]
 |------|-------------|
 | `-t, --trails <N>` | Number of trail frames to show (default: 20, max: 20) |
 | `-v, --verbose` | Print raw kernel multitouch events to stderr |
-| `-l, --libinput` | Show libinput pointer/scroll/gesture data in a right side panel |
+| `-l, --libinput` | Insist on the interpreted-input panel (libinput on Linux, mouse hook on Windows) and exit if it is unavailable. It is enabled automatically otherwise |
+| `--no-libinput` | Hide the interpreted-input panel |
+| `--heatmap` | Insist on the raw capacitive heatmap and exit if the pad has no supported chip. Enabled automatically otherwise |
+| `--no-heatmap` | Disable the heatmap |
+| `--heatmap-cols <N>` | Override the heatmap column count (for debugging stride issues) |
+| `--config` | Insist on the PTP configuration panel and exit if the pad has no configurable field. Enabled automatically otherwise |
+| `--no-config` | Hide the PTP configuration panel |
+| `--list` | List the detected touchpads and exit |
+| `--info` | Print device info (axis ranges, physical size, PTP configuration) and exit |
+| `--device <DEV>` | Use a specific touchpad instead of auto-detection: a path, a name, or an event number from `--list` (`event8` or `8`) |
+| `--set-haptic-intensity <N>` | Set the haptic intensity (0, 25, 50, 75 or 100; the firmware has five levels) and exit |
+| `--set-click-force <N>` | Set the click-force / button-press threshold level (typically 1 = light to 3 = firm) and exit |
 | `--record <path>` | Record touch session to a binary file |
 | `--play <path>` | Play back a recorded touch session (no device needed) |
 | `--hidraw` | Linux: read touches from the hidraw node through tapview's own PTP report parser instead of evdev (same `hidraw` access as the heatmap; no grab). For checking the parser against the kernel |
 | `--dump-hidraw <N>` | Linux: print the HID report descriptor and N raw input reports as hex, then exit |
-| `--heatmap` / `--no-heatmap` | Force the raw capacitive heatmap panel on (exit if the hardware has none) or leave it out entirely. By default it appears when the hardware supports it |
 | `-h, --help` | Show help |
 
 ### Controls
@@ -151,6 +179,14 @@ sudo ./target/release/tapview --record /tmp/session.tapv
 
 # Play it back (no device/sudo needed)
 ./target/release/tapview --play /tmp/session.tapv
+
+# Pick a touchpad when several are attached
+sudo ./target/release/tapview --list
+sudo ./target/release/tapview --device event8
+
+# Inspect and change the PTP configuration without the UI
+sudo ./target/release/tapview --info
+sudo ./target/release/tapview --set-haptic-intensity 50
 ```
 
 #### Cross-platform builds with Nix
@@ -173,6 +209,12 @@ Build as your user, then run the binary with sudo:
 ```
 nix develop -c cargo build && nix develop -c bash -c 'sudo env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ./target/debug/tapview --record /tmp/test.tapv'
 ```
+
+## On Windows
+
+The same binary runs on Windows. Touches come from the pad's Precision Touchpad reports through Raw Input, so no driver or special privileges are needed, and the right-hand panel shows pointer motion, clicks and scrolling captured with a low-level mouse hook. Heatmap and PTP configuration use the Windows HID API and work as on Linux. Two things differ: the touchpad cannot be grabbed (Enter does nothing), and the pad's own scan timestamp is not read yet, so the report-rate figure shows only the host rate.
+
+Windows builds are cross-compiled from Linux with Nix (see below); there is no Windows CI artifact yet.
 
 ## On Android
 
@@ -234,26 +276,51 @@ Browser differences, all inherent to the platform:
 
 ## Architecture
 
-Two-thread design:
-
-- **Input thread** reads evdev events in a non-blocking loop, processes them through an MT Protocol B state machine, and sends touch snapshots to the UI thread over an `mpsc` channel.
-- **UI thread** runs the eframe/egui event loop, drains the channel each frame, and renders touch points with trails.
+Everything lives in one library crate; the native binary, the Android `cdylib` and the browser build are thin front ends that assemble a `Session` (an open touchpad: touch reader, heatmap loop, PTP configuration worker) and hand it to the same egui `TapviewApp`. Device I/O never runs on the UI thread: the native build uses one thread per source and `mpsc` channels, the browser build uses async tasks over the same traits.
 
 ```
 src/
-  main.rs              CLI, device discovery, thread spawn, eframe setup
-  app.rs               eframe::App impl, rendering loop, history buffer
-  multitouch.rs        MT Protocol B state machine (platform-independent)
-  dimensions.rs        Touchpad-to-screen scaling math
-  render.rs            egui Painter drawing helpers
-  libinput_backend.rs  Libinput library integration (pointer, scroll, gestures)
-  libinput_state.rs    Libinput event state for visualization
+  main.rs                    Entry shim: cli::main natively, web::start on wasm32
+  lib.rs                     Module tree shared by every front end
+  cli.rs                     Native CLI: arguments, device selection, --info/--set-*, thread setup
+  app.rs                     eframe::App impl, rendering loop, history buffer, connect screen
+  session.rs                 An open touchpad bundled with its heatmap and config handles
+  multitouch.rs              MT Protocol B state machine (platform-independent)
+  ptp.rs                     Parser for raw PTP input reports (hidraw, USB, WebHID)
+  report_rate.rs             Pad cadence vs host throughput estimate
+  recording.rs               Record/playback file format
+  dimensions.rs              Touchpad-to-screen scaling math
+  render.rs                  egui Painter drawing helpers
+  libinput_backend.rs        Linux: libinput integration (pointer, scroll, gestures)
+  libinput_state.rs          Interpreted-input event state for the side panel
+  windows_input_backend.rs   Windows: mouse hook feeding the same side panel
   input/
-    mod.rs             InputBackend trait
-    evdev_backend.rs   Linux evdev implementation
+    mod.rs                   InputBackend trait
+    evdev_backend.rs         Linux evdev implementation
+    hidraw_backend.rs        Linux hidraw + PTP parser (--hidraw), for checking the parser
+    windows_backend.rs       Windows Raw Input implementation
   discovery/
-    mod.rs             DeviceDiscovery trait
-    udev_discovery.rs  Linux udev implementation
+    mod.rs                   DeviceDiscovery trait, device table
+    udev_discovery.rs        Linux udev implementation
+    windows_discovery.rs     Windows SetupAPI/HID implementation
+  hid/
+    mod.rs, descriptor.rs    HID report-descriptor model shared by every transport
+    linux.rs                 Descriptor from sysfs next to the hidraw node
+  heatmap/
+    mod.rs                   HidDevice trait (feature-report I/O), frame type
+    chips.rs, protocol.rs    PixArt chip detection, register and burst-read protocol
+    discovery.rs             Finding the heatmap-capable HID interface
+    backend.rs               Polling loop and its pause/stop switches
+    hidraw.rs, windows_hid.rs  Native HidDevice implementations
+  config/
+    mod.rs                   PTP configuration model, UI handle and worker protocol
+    layout_backend.rs        Descriptor-driven backend (Linux, Android, browser)
+    linux.rs, windows.rs     Platform glue (Windows uses HidP instead of the descriptor model)
+  web.rs, web_hid.rs         Browser front end and WebHID transport
+  android.rs, android_hid.rs Android front end and JNI bridge to the Kotlin USB code
+android/                     Gradle project, Kotlin USB bridge, tapview-android cdylib crate
+index.html, Trunk.toml       The browser build
+plans/                       Design notes for the Android and web ports
 ```
 
-The trait-based design (`InputBackend`, `DeviceDiscovery`) is intended for future extensibility to other platforms or input sources.
+The `InputBackend`, `DeviceDiscovery`, `HidDevice` and `ConfigBackend` traits are the seams between the shared UI and each platform; adding a transport means implementing them and building a `Session`.
