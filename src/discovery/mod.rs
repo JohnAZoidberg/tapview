@@ -114,6 +114,20 @@ impl std::fmt::Display for DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// A one-line name for the UI: the product name (or the node), then bus
+    /// and VID:PID, e.g. `PIXA3854:00 093A:0343 Touchpad (I2C 093a:0343)`.
+    pub fn label(&self) -> String {
+        let name = self
+            .name
+            .clone()
+            .unwrap_or_else(|| self.devnode.display().to_string());
+        if self.vendor_id.is_some() && self.product_id.is_some() {
+            format!("{} ({} {})", name, self.bus, self.vid_pid_string())
+        } else {
+            format!("{} ({})", name, self.bus)
+        }
+    }
+
     fn vid_pid_string(&self) -> String {
         match (self.vendor_id, self.product_id) {
             (Some(vid), Some(pid)) => format!("{:04x}:{:04x}", vid, pid),

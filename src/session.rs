@@ -19,6 +19,9 @@ pub enum GrabCommand {
 }
 
 pub struct Session {
+    /// What the device is, for the corner of the view: product name plus
+    /// whatever tells it apart from its siblings (bus, VID:PID, node).
+    pub name: String,
     /// Touch frames from the input backend.
     pub touch_rx: mpsc::Receiver<TouchState>,
     /// `Some` where the backend can grab the device (Linux evdev); `None`
@@ -37,4 +40,10 @@ pub struct Session {
     /// Backends that can notice the device going away (a USB unplug) report
     /// it here; the app then drops the session and says why.
     pub lost: Option<mpsc::Receiver<String>>,
+    /// Anything that must live exactly as long as the session and be torn
+    /// down with it: the browser transport keeps its event-handler closures
+    /// and the open `HIDDevice` here, since nothing else would drop them.
+    /// Thread-based backends need none of this — they notice the closed
+    /// channels — and leave it `None`.
+    pub guard: Option<Box<dyn std::any::Any>>,
 }

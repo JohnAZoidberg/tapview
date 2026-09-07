@@ -545,6 +545,7 @@ pub fn main() {
     let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
     let config_handle = ptp_config.map(Ptp::into_handle);
     let session = Session {
+        name: device.label(),
         touch_rx,
         grab_tx: can_grab.then_some(grab_tx),
         heatmap_rx,
@@ -552,6 +553,7 @@ pub fn main() {
         extents: session_extents,
         recorder,
         lost: None,
+        guard: None,
     };
     let title = if is_recording {
         "Tapview - Touchpad Visualizer (Recording)"

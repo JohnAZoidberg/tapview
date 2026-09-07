@@ -236,6 +236,24 @@ impl ReportLayout {
         layout
     }
 
+    /// Build a layout from fields that were laid out elsewhere (a browser's
+    /// parsed `HIDDevice.collections`): report sizes are derived from the
+    /// fields' extents, so every field of a report — padding included — must
+    /// be present.
+    pub fn from_parts(fields: Vec<ReportField>, collections: Vec<Collection>) -> ReportLayout {
+        let mut sizes: HashMap<(ReportKind, u8), usize> = HashMap::new();
+        for f in &fields {
+            let end = f.bit_offset + f.bit_size;
+            let size = sizes.entry((f.kind, f.report_id)).or_insert(0);
+            *size = (*size).max(end);
+        }
+        ReportLayout {
+            fields,
+            collections,
+            sizes,
+        }
+    }
+
     /// Payload size in bytes of a report (excluding the report-ID byte); 0
     /// if the descriptor declares no such report.
     pub fn report_bytes(&self, kind: ReportKind, report_id: u8) -> usize {

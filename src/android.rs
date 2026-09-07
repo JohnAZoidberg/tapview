@@ -66,9 +66,38 @@ fn reserve_insets(ctx: &egui::Context, _app: &mut TapviewApp) {
     }
 }
 
+/// Everything [`open_session`] produces on its worker thread. `Session`
+/// itself is not `Send` (its `guard` may hold browser objects), so the
+/// picker moves these parts back to the UI thread and builds the `Session`
+/// there ([`Opened::into_session`]).
+pub struct Opened {
+    name: String,
+    touch_rx: mpsc::Receiver<crate::input::TouchState>,
+    heatmap_rx: Option<mpsc::Receiver<crate::heatmap::HeatmapFrame>>,
+    config: Option<ConfigHandle>,
+    extents: Option<(i32, i32)>,
+    lost_rx: mpsc::Receiver<String>,
+}
+
+impl Opened {
+    pub fn into_session(self) -> Session {
+        Session {
+            name: self.name,
+            touch_rx: self.touch_rx,
+            grab_tx: None,
+            heatmap_rx: self.heatmap_rx,
+            config: self.config,
+            extents: self.extents,
+            recorder: None,
+            lost: Some(self.lost_rx),
+            guard: None,
+        }
+    }
+}
+
 /// Open a touchpad and start everything that reads from it. Blocking (USB
 /// transfers, the config probe): run on a worker thread.
-pub fn open_session(dev: &UsbDeviceInfo) -> Result<Session, String> {
+pub fn open_session(dev: &UsbDeviceInfo) -> Result<Opened, String> {
     let (iface, desc) = dev
         .touchpad
         .clone()
@@ -139,14 +168,13 @@ pub fn open_session(dev: &UsbDeviceInfo) -> Result<Session, String> {
         None => None,
     };
 
-    Ok(Session {
+    Ok(Opened {
+        name: dev.label(),
         touch_rx,
-        grab_tx: None,
         heatmap_rx,
         config,
         extents,
-        recorder: None,
-        lost: Some(lost_rx),
+        lost_rx,
     })
 }
 
@@ -157,7 +185,7 @@ struct UsbPicker {
     /// A list refresh in progress.
     listing: Option<mpsc::Receiver<Result<Vec<UsbDeviceInfo>, String>>>,
     /// A device being opened (label, result channel).
-    opening: Option<(String, mpsc::Receiver<Result<Session, String>>)>,
+    opening: Option<(String, mpsc::Receiver<Result<Opened, String>>)>,
     /// Bridge generation the current list corresponds to; `None` = never listed.
     listed_generation: Option<i32>,
     /// Device the app was launched for, to open as soon as it is listed.
@@ -217,9 +245,9 @@ impl UsbPicker {
 
         if let Some((_, rx)) = &self.opening {
             match rx.try_recv() {
-                Ok(Ok(session)) => {
+                Ok(Ok(opened)) => {
                     self.opening = None;
-                    return Some(SessionRequest::Attach(Box::new(session)));
+                    return Some(SessionRequest::Attach(Box::new(opened.into_session())));
                 }
                 Ok(Err(e)) => {
                     self.error = Some(e);

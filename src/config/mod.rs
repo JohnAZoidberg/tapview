@@ -417,26 +417,61 @@ impl ConfigHandle {
 }
 
 /// The worker loop: owns the backend, services commands until the UI side
-/// goes away.
+/// goes away. Blocks in `recv` between commands, so this is for a thread of
+/// its own; single-threaded hosts use [`run_config_worker_polling`].
 pub async fn run_config_worker<B: ConfigBackend>(
     mut backend: B,
     cmd_rx: mpsc::Receiver<ConfigCommand>,
     evt_tx: mpsc::Sender<ConfigEvent>,
 ) {
     while let Ok(cmd) = cmd_rx.recv() {
-        let event = match cmd {
-            ConfigCommand::Write(write) => ConfigEvent::WriteResult {
-                write,
-                result: apply_write(&mut backend, write)
-                    .await
-                    .map_err(|e| e.to_string()),
-            },
-            ConfigCommand::Refresh => ConfigEvent::Values(backend.read_all().await),
-        };
-        if evt_tx.send(event).is_err() {
+        if !service(&mut backend, cmd, &evt_tx).await {
             break;
         }
     }
+}
+
+/// [`run_config_worker`] for hosts where the worker shares the only thread
+/// with the UI (the browser): never blocks on the channel, but awaits
+/// `idle()` — a timer future that yields to the event loop — whenever no
+/// command is queued. Ends when the UI side drops its end of either channel.
+pub async fn run_config_worker_polling<B, F, Fut>(
+    mut backend: B,
+    cmd_rx: mpsc::Receiver<ConfigCommand>,
+    evt_tx: mpsc::Sender<ConfigEvent>,
+    mut idle: F,
+) where
+    B: ConfigBackend,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    loop {
+        match cmd_rx.try_recv() {
+            Ok(cmd) => {
+                if !service(&mut backend, cmd, &evt_tx).await {
+                    break;
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => idle().await,
+            Err(mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
+}
+
+/// Perform one command and report its outcome; `false` once the UI is gone.
+async fn service<B: ConfigBackend>(
+    backend: &mut B,
+    cmd: ConfigCommand,
+    evt_tx: &mpsc::Sender<ConfigEvent>,
+) -> bool {
+    let event = match cmd {
+        ConfigCommand::Write(write) => ConfigEvent::WriteResult {
+            write,
+            result: apply_write(backend, write).await.map_err(|e| e.to_string()),
+        },
+        ConfigCommand::Refresh => ConfigEvent::Values(backend.read_all().await),
+    };
+    evt_tx.send(event).is_ok()
 }
 
 #[cfg(test)]

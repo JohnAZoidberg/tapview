@@ -373,6 +373,17 @@ impl eframe::App for TapviewApp {
             .show(ctx, |ui| {
                 let painter = ui.painter();
 
+                // Which device this is, in the corner
+                if let Some(session) = &self.session {
+                    painter.text(
+                        central_rect.min + egui::vec2(6.0, 4.0),
+                        egui::Align2::LEFT_TOP,
+                        &session.name,
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::GRAY,
+                    );
+                }
+
                 // Draw touchpad boundary
                 let boundary_width = self.dims.touchpad_max_extent_x * scale;
                 let boundary_height = self.dims.touchpad_max_extent_y * scale;
