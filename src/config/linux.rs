@@ -80,7 +80,7 @@ impl LinuxConfigBackend {
             .unwrap_or(0);
         let mut buf = vec![0u8; 1 + report_byte_size];
         buf[0] = field.report_id;
-        self.device.get_feature(&mut buf).ok()?;
+        pollster::block_on(self.device.get_feature(&mut buf)).ok()?;
         Some(extract_bits(&buf[1..], field.bit_offset, field.bit_size))
     }
 
@@ -97,9 +97,9 @@ impl LinuxConfigBackend {
         let mut buf = vec![0u8; 1 + report_byte_size];
         buf[0] = field.report_id;
         // Read-modify-write
-        self.device.get_feature(&mut buf)?;
+        pollster::block_on(self.device.get_feature(&mut buf))?;
         insert_bits(&mut buf[1..], field.bit_offset, field.bit_size, value);
-        self.device.set_feature(&buf)
+        pollster::block_on(self.device.set_feature(&buf))
     }
 }
 

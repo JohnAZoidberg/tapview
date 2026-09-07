@@ -8,6 +8,8 @@ eframe = "0.31"
 egui = "0.31"
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
+# Drives the async HID layer to completion on native worker threads.
+pollster = "0.4"
 # Plain-text stderr logger for the CLI; no regex/humantime/color features needed.
 env_logger = { version = "0.11", default-features = false }
 

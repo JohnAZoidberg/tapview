@@ -60,7 +60,7 @@ impl WindowsConfigBackend {
     fn read_usage_value(&self, info: &PtpUsageInfo) -> Option<u32> {
         let mut buf = vec![0u8; self.feature_report_len];
         buf[0] = info.report_id;
-        self.device.get_feature(&mut buf).ok()?;
+        pollster::block_on(self.device.get_feature(&mut buf)).ok()?;
 
         let preparsed = PHIDP_PREPARSED_DATA(self.preparsed);
         let mut value: u32 = 0;
@@ -86,7 +86,7 @@ impl WindowsConfigBackend {
         let mut buf = vec![0u8; self.feature_report_len];
         buf[0] = info.report_id;
         // Read-modify-write
-        self.device.get_feature(&mut buf)?;
+        pollster::block_on(self.device.get_feature(&mut buf))?;
 
         let preparsed = PHIDP_PREPARSED_DATA(self.preparsed);
         let status = unsafe {
@@ -104,7 +104,7 @@ impl WindowsConfigBackend {
             return Err(io::Error::other("HidP_SetUsageValue failed"));
         }
 
-        self.device.set_feature(&buf)
+        pollster::block_on(self.device.set_feature(&buf))
     }
 }
 

@@ -1,7 +1,6 @@
 use super::chips::{identify_chip, read_frame, read_matrix_dims, ChipVariant};
 use super::protocol::{read_reg, read_user_reg};
-use super::HeatmapFrame;
-use super::HidDevice;
+use super::{open_platform_hid_device, HeatmapFrame, HidDevice};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
@@ -17,7 +16,7 @@ pub fn spawn_heatmap_thread(
     let path = hidraw_path.to_path_buf();
 
     thread::spawn(move || {
-        let dev: Box<dyn HidDevice> = match open_hid_device(&path) {
+        let dev = match open_platform_hid_device(&path) {
             Ok(d) => d,
             Err(e) => {
                 log::error!("heatmap: failed to open {}: {}", path.display(), e);
@@ -25,29 +24,23 @@ pub fn spawn_heatmap_thread(
             }
         };
 
-        run_heatmap_loop(&*dev, burst_len, cols_override, &tx);
+        // The HID layer is async for the browser's sake; on a native thread
+        // block_on simply blocks where the ioctl used to.
+        pollster::block_on(run_heatmap_loop(&dev, burst_len, cols_override, &tx));
     });
 
     rx
 }
 
-#[cfg(target_os = "linux")]
-fn open_hid_device(path: &Path) -> std::io::Result<Box<dyn HidDevice>> {
-    Ok(Box::new(super::hidraw::HidrawDevice::open(path)?))
-}
-
-#[cfg(target_os = "windows")]
-fn open_hid_device(path: &Path) -> std::io::Result<Box<dyn HidDevice>> {
-    Ok(Box::new(super::windows_hid::WinHidDevice::open(path)?))
-}
-
-fn run_heatmap_loop(
-    dev: &dyn HidDevice,
+/// Identify the chip, read its matrix dimensions, then stream frames into
+/// `tx` until the receiver goes away or a read fails.
+pub async fn run_heatmap_loop<D: HidDevice>(
+    dev: &D,
     burst_len: usize,
     cols_override: Option<usize>,
     tx: &mpsc::Sender<HeatmapFrame>,
 ) {
-    let chip = match identify_chip(dev) {
+    let chip = match identify_chip(dev).await {
         Ok(c) => c,
         Err(e) => {
             log::error!("heatmap: failed to identify chip: {}", e);
@@ -55,7 +48,7 @@ fn run_heatmap_loop(
         }
     };
 
-    let (rows, cols) = match read_matrix_dims(dev, chip) {
+    let (rows, cols) = match read_matrix_dims(dev, chip).await {
         Ok(d) => d,
         Err(e) => {
             log::error!("heatmap: failed to read matrix dimensions: {}", e);
@@ -73,7 +66,7 @@ fn run_heatmap_loop(
 
     // Dump candidate dimension registers for unknown/new chips
     if chip == ChipVariant::PJP343 {
-        probe_dimension_registers(dev);
+        probe_dimension_registers(dev).await;
     }
 
     // Display cols can be overridden for stride debugging
@@ -84,7 +77,7 @@ fn run_heatmap_loop(
 
     loop {
         // Hardware read always uses register-derived dimensions
-        match read_frame(dev, chip, rows, cols, burst_len) {
+        match read_frame(dev, chip, rows, cols, burst_len).await {
             Ok(data) => {
                 let display_rows = data.len() / display_cols;
                 let frame = HeatmapFrame {
@@ -105,37 +98,43 @@ fn run_heatmap_loop(
     }
 }
 
-fn probe_dimension_registers(dev: &dyn HidDevice) {
+async fn probe_dimension_registers<D: HidDevice>(dev: &D) {
     log::info!("heatmap: --- PJP343 register probe ---");
 
     // PJP274 style: UserBank 0, 0x6E/0x6F
-    if let (Ok(s), Ok(d)) = (read_user_reg(dev, 0, 0x6E), read_user_reg(dev, 0, 0x6F)) {
+    if let (Ok(s), Ok(d)) = (
+        read_user_reg(dev, 0, 0x6E).await,
+        read_user_reg(dev, 0, 0x6F).await,
+    ) {
         log::info!("  UserBank0 0x6E(senses)={} 0x6F(drives)={}", s, d);
     }
     // Check adjacent registers for 16-bit values
     if let (Ok(a), Ok(b), Ok(c), Ok(d)) = (
-        read_user_reg(dev, 0, 0x6C),
-        read_user_reg(dev, 0, 0x6D),
-        read_user_reg(dev, 0, 0x70),
-        read_user_reg(dev, 0, 0x71),
+        read_user_reg(dev, 0, 0x6C).await,
+        read_user_reg(dev, 0, 0x6D).await,
+        read_user_reg(dev, 0, 0x70).await,
+        read_user_reg(dev, 0, 0x71).await,
     ) {
         log::info!("  UserBank0 0x6C={} 0x6D={} 0x70={} 0x71={}", a, b, c, d);
     }
 
     // PJP255 style: UserBank 0, 0x59/0x5A
-    if let (Ok(s), Ok(d)) = (read_user_reg(dev, 0, 0x59), read_user_reg(dev, 0, 0x5A)) {
+    if let (Ok(s), Ok(d)) = (
+        read_user_reg(dev, 0, 0x59).await,
+        read_user_reg(dev, 0, 0x5A).await,
+    ) {
         log::info!("  UserBank0 0x59(senses)={} 0x5A(drives)={}", s, d);
     }
 
     // PLP239 style: Bank 9, 0x01/0x02
-    if let (Ok(d), Ok(s)) = (read_reg(dev, 9, 0x01), read_reg(dev, 9, 0x02)) {
+    if let (Ok(d), Ok(s)) = (read_reg(dev, 9, 0x01).await, read_reg(dev, 9, 0x02).await) {
         log::info!("  Bank9 0x01(drives)={} 0x02(senses)={}", d, s);
     }
 
     // Scan UserBank 0 around 0x60-0x7F for anything that looks like a dimension
     let mut scan = String::from("  UserBank0 0x60..0x7F:");
     for addr in 0x60..=0x7F {
-        if let Ok(v) = read_user_reg(dev, 0, addr) {
+        if let Ok(v) = read_user_reg(dev, 0, addr).await {
             scan.push_str(&format!(" {:02X}={}", addr, v));
         }
     }

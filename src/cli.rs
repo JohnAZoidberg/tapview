@@ -19,7 +19,7 @@ use crate::input::InputBackend;
 use crate::libinput_backend;
 #[cfg(target_os = "windows")]
 use crate::windows_input_backend;
-use crate::{config, discovery, heatmap, input, recording, render};
+use crate::{config, discovery, heatmap, recording, render};
 use clap::Parser;
 use std::sync::mpsc;
 use std::thread;
@@ -200,7 +200,7 @@ pub fn main() {
 
     // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
     #[cfg(target_os = "linux")]
-    let evdev_extents = input::evdev_backend::read_axis_extents(&device.devnode);
+    let evdev_extents = crate::input::evdev_backend::read_axis_extents(&device.devnode);
     #[cfg(target_os = "windows")]
     let evdev_extents = None;
 

@@ -44,7 +44,7 @@ impl Drop for WinHidDevice {
 }
 
 impl HidDevice for WinHidDevice {
-    fn set_feature(&self, buf: &[u8]) -> io::Result<()> {
+    async fn set_feature(&self, buf: &[u8]) -> io::Result<()> {
         let ok = unsafe {
             HidD_SetFeature(
                 self.handle,
@@ -59,7 +59,7 @@ impl HidDevice for WinHidDevice {
         }
     }
 
-    fn get_feature(&self, buf: &mut [u8]) -> io::Result<usize> {
+    async fn get_feature(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ok = unsafe {
             HidD_GetFeature(
                 self.handle,

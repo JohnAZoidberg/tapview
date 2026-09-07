@@ -47,7 +47,7 @@ impl HidrawDevice {
 }
 
 impl HidDevice for HidrawDevice {
-    fn set_feature(&self, buf: &[u8]) -> io::Result<()> {
+    async fn set_feature(&self, buf: &[u8]) -> io::Result<()> {
         let ret = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
@@ -62,7 +62,7 @@ impl HidDevice for HidrawDevice {
         }
     }
 
-    fn get_feature(&self, buf: &mut [u8]) -> io::Result<usize> {
+    async fn get_feature(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ret = unsafe {
             libc::ioctl(
                 self.fd.as_raw_fd(),
