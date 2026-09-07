@@ -11,6 +11,7 @@ pub mod config;
 pub mod dimensions;
 pub mod discovery;
 pub mod heatmap;
+pub mod hid;
 pub mod input;
 #[cfg(target_os = "linux")]
 pub mod libinput_backend;

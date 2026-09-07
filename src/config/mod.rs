@@ -1,3 +1,4 @@
+pub mod layout_backend;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "windows")]
@@ -68,7 +69,7 @@ pub struct ValueRange {
 }
 
 /// Platform-specific backend for reading/writing PTP feature reports.
-pub(crate) trait ConfigBackend: Send {
+pub trait ConfigBackend: Send {
     fn read_all(&mut self) -> ConfigValues;
     fn write_input_mode(&mut self, value: u8) -> io::Result<()>;
     fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()>;
