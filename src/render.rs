@@ -29,7 +29,7 @@ pub fn draw_touchpad_boundary(painter: &Painter, corner: Pos2, width: f32, heigh
     painter.rect_stroke(
         Rect::from_min_size(corner, Vec2::new(width, height)),
         0.0,
-        Stroke::new(1.0, ORANGE),
+        Stroke::new(1.0_f32, ORANGE),
         StrokeKind::Outside,
     );
 }
@@ -173,14 +173,14 @@ fn draw_cross(
             Pos2::new(center.x - max, center.y),
             Pos2::new(center.x + max, center.y),
         ],
-        Stroke::new(1.0, guide_color),
+        Stroke::new(1.0_f32, guide_color),
     );
     painter.line_segment(
         [
             Pos2::new(center.x, center.y - max),
             Pos2::new(center.x, center.y + max),
         ],
-        Stroke::new(1.0, guide_color),
+        Stroke::new(1.0_f32, guide_color),
     );
 
     // Draw unaccelerated (outline) first, then accelerated (filled) on top
@@ -206,7 +206,7 @@ fn draw_cross(
             if filled {
                 painter.rect_filled(rect, 0.0, color);
             } else {
-                painter.rect_stroke(rect, 0.0, Stroke::new(1.0, color), StrokeKind::Outside);
+                painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, color), StrokeKind::Outside);
             }
         }
 
@@ -226,7 +226,7 @@ fn draw_cross(
             if filled {
                 painter.rect_filled(rect, 0.0, color);
             } else {
-                painter.rect_stroke(rect, 0.0, Stroke::new(1.0, color), StrokeKind::Outside);
+                painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, color), StrokeKind::Outside);
             }
         }
     }
@@ -282,7 +282,7 @@ pub fn draw_libinput_panel(ui: &mut egui::Ui, state: &LibinputState) {
     painter.rect_stroke(
         Rect::from_min_size(Pos2::new(cx + 10.0, y), Vec2::new(10.0, 10.0)),
         0.0,
-        Stroke::new(1.0, UNACCEL_COLOR),
+        Stroke::new(1.0_f32, UNACCEL_COLOR),
         StrokeKind::Outside,
     );
     painter.text(
@@ -405,7 +405,7 @@ pub fn draw_libinput_panel(ui: &mut egui::Ui, state: &LibinputState) {
             painter.circle_stroke(
                 gesture_center,
                 ring_radius.clamp(4.0, CROSS_SIZE * 1.5),
-                Stroke::new(2.0, TEAL),
+                Stroke::new(2.0_f32, TEAL),
             );
 
             // Rotation indicator: a line from center at the angle
@@ -416,7 +416,7 @@ pub fn draw_libinput_panel(ui: &mut egui::Ui, state: &LibinputState) {
                     gesture_center.x + angle_rad.sin() * line_len,
                     gesture_center.y - angle_rad.cos() * line_len,
                 );
-                painter.line_segment([gesture_center, end], Stroke::new(2.0, ORANGE));
+                painter.line_segment([gesture_center, end], Stroke::new(2.0_f32, ORANGE));
             }
         }
 

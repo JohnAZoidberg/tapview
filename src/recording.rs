@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn test_load_sample_recording() {
         let rec = Recording::load("testdata/sample.tapv").unwrap();
-        assert!(rec.frames.len() > 0, "expected frames, got 0");
+        assert!(!rec.frames.is_empty(), "expected frames, got 0");
         assert!(rec.duration_secs() > 0.0);
         assert_eq!(rec.extent_x, 3841);
         assert_eq!(rec.extent_y, 2392);
