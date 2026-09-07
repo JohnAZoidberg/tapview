@@ -11,7 +11,14 @@
       "Bash(grep:*)",
       "Bash(nix develop:*)",
       "Bash(nix build:*)",
-      "WebFetch(domain:docs.microsoft.com)"
+      "WebFetch(domain:docs.microsoft.com)",
+      "Read(//c/Users/skype/.cargo/registry/src/**)",
+      "PowerShell(cargo test *)",
+      "PowerShell(cargo run *)",
+      "PowerShell(cargo fmt *)",
+      "PowerShell(cargo build *)",
+      "PowerShell(Get-PnpDevice *)",
+      "Bash(./target/release/tapview.exe --device 3 --heatmap)"
     ]
   }
 }
