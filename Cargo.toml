@@ -1,19 +1,43 @@
+# The Android app's Rust glue crate lives in the workspace so one
+# `cargo build --workspace` covers it; it is cross-compiled separately (see
+# android/README.md) and builds to an empty cdylib on desktop hosts.
+[workspace]
+members = ["android/rust"]
+
 [package]
 name = "tapview"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.31"
 egui = "0.31"
-clap = { version = "4", features = ["derive"] }
 log = "0.4"
 # Drives the async HID layer to completion on native worker threads.
 pollster = "0.4"
 # std::time::Instant on native, performance.now() on wasm (std's panics there).
 web-time = "1.1"
+
+# Desktop: eframe with its default windowing backends, plus the CLI's crates.
+# eframe has to be declared per target rather than once: a dependent crate can
+# only ever add features, so if wayland/x11 were unconditional the Android
+# glue crate could not turn them off.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = "0.31"
+clap = { version = "4", features = ["derive"] }
 # Plain-text stderr logger for the CLI; no regex/humantime/color features needed.
 env_logger = { version = "0.11", default-features = false }
+
+# Android: the same eframe with winit's android-activity backend instead of
+# the desktop windowing features. `jni` is how src/android_hid.rs reaches the
+# Kotlin UsbBridge that owns the USB transfers (Android exposes USB through
+# UsbManager, not device nodes).
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "android-native-activity",
+] }
+jni = "0.21"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"

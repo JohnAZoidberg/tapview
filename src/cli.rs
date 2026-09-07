@@ -551,6 +551,7 @@ pub fn main() {
         config: config_handle,
         extents: session_extents,
         recorder,
+        lost: None,
     };
     let title = if is_recording {
         "Tapview - Touchpad Visualizer (Recording)"

@@ -22,6 +22,10 @@ pub enum SessionRequest {
 /// Platform controls drawn on the no-session screen; see [`NoSessionUi`].
 pub type NoSessionControls = Box<dyn FnMut(&mut egui::Ui) -> Option<SessionRequest>>;
 
+/// Runs at the start of every frame, before any panel: for platform work
+/// such as reserving the system-bar insets on Android.
+pub type FrameHook = Box<dyn FnMut(&egui::Context, &mut TapviewApp)>;
+
 /// What the central panel shows while no device is open.
 ///
 /// Natively a session always exists before the window opens, so this is only
@@ -77,6 +81,7 @@ pub struct TapviewApp {
     touch_history: Vec<[TouchData; MAX_TOUCH_POINTS]>,
     trails: usize,
     grabbed: bool,
+    frame_hook: Option<FrameHook>,
 }
 
 impl TapviewApp {
@@ -98,6 +103,7 @@ impl TapviewApp {
             touch_history: vec![[TouchData::default(); MAX_TOUCH_POINTS]; HISTORY_MAX],
             trails,
             grabbed: false,
+            frame_hook: None,
         }
     }
 
@@ -119,6 +125,16 @@ impl TapviewApp {
     pub fn with_no_session_ui(mut self, ui: NoSessionUi) -> Self {
         self.no_session = ui;
         self
+    }
+
+    pub fn with_frame_hook(mut self, hook: FrameHook) -> Self {
+        self.frame_hook = Some(hook);
+        self
+    }
+
+    /// Change what the no-session screen says.
+    pub fn set_no_session_message(&mut self, message: impl Into<String>) {
+        self.no_session.message = message.into();
     }
 
     pub fn has_session(&self) -> bool {
@@ -166,6 +182,23 @@ impl TapviewApp {
 
 impl eframe::App for TapviewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(mut hook) = self.frame_hook.take() {
+            hook(ctx, self);
+            self.frame_hook = Some(hook);
+        }
+
+        // A backend noticed the device going away: drop the session and say so.
+        let lost = self
+            .session
+            .as_ref()
+            .and_then(|s| s.lost.as_ref())
+            .and_then(|rx| rx.try_recv().ok());
+        if let Some(reason) = lost {
+            log::error!("touchpad lost: {}", reason);
+            self.detach_session();
+            self.no_session.message = format!("Touchpad disconnected: {}", reason);
+        }
+
         let is_playback = self.playback.is_some();
 
         if let Some(pb) = &mut self.playback {

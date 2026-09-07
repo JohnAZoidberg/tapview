@@ -1,14 +1,14 @@
 use super::chips::{identify_chip, read_frame, read_matrix_dims, ChipVariant};
 use super::protocol::{read_reg, read_user_reg};
-use super::{open_platform_hid_device, HeatmapFrame, HidDevice};
-use std::path::Path;
+use super::{HeatmapFrame, HidDevice};
 use std::sync::mpsc;
 use std::thread;
 
 /// Spawn a background thread that continuously reads raw capacitive frames
-/// and sends them over a channel.
+/// from the platform HID device at `hidraw_path` and sends them over a channel.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn spawn_heatmap_thread(
-    hidraw_path: &Path,
+    hidraw_path: &std::path::Path,
     burst_len: usize,
     cols_override: Option<usize>,
 ) -> mpsc::Receiver<HeatmapFrame> {
@@ -16,7 +16,7 @@ pub fn spawn_heatmap_thread(
     let path = hidraw_path.to_path_buf();
 
     thread::spawn(move || {
-        let dev = match open_platform_hid_device(&path) {
+        let dev = match super::open_platform_hid_device(&path) {
             Ok(d) => d,
             Err(e) => {
                 log::error!("heatmap: failed to open {}: {}", path.display(), e);
@@ -29,6 +29,20 @@ pub fn spawn_heatmap_thread(
         pollster::block_on(run_heatmap_loop(&dev, burst_len, cols_override, &tx));
     });
 
+    rx
+}
+
+/// Like [`spawn_heatmap_thread`] for an already opened device (the Android
+/// USB transport, or anything else that is not addressed by a path).
+pub fn spawn_heatmap_thread_with<D: HidDevice + Send + 'static>(
+    dev: D,
+    burst_len: usize,
+    cols_override: Option<usize>,
+) -> mpsc::Receiver<HeatmapFrame> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        pollster::block_on(run_heatmap_loop(&dev, burst_len, cols_override, &tx));
+    });
     rx
 }
 

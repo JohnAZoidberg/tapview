@@ -34,4 +34,7 @@ pub struct Session {
     pub extents: Option<(i32, i32)>,
     /// Records every touch frame while set.
     pub recorder: Option<Recorder>,
+    /// Backends that can notice the device going away (a USB unplug) report
+    /// it here; the app then drops the session and says why.
+    pub lost: Option<mpsc::Receiver<String>>,
 }

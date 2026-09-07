@@ -1,4 +1,5 @@
 use std::io;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::path::{Path, PathBuf};
 
 // ── Linux: find sibling hidraw via udev ───────────────────────────────────

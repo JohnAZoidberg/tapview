@@ -8,6 +8,7 @@ pub mod protocol;
 pub mod windows_hid;
 
 use std::io;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::path::Path;
 
 /// A single frame of raw capacitive heatmap data.

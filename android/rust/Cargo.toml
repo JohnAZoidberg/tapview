@@ -1,0 +1,35 @@
+# The Android app's Rust half: a cdylib whose `android_main` hands control to
+# the Android front end in the main crate (`tapview::android`). This crate —
+# not tapview — owns the winit/android-activity dependency, so the versions
+# are pinned by eframe's own resolution and tapview's public API carries no
+# winit types.
+#
+# Built for the phone by Gradle via cargo-ndk (see ../app/build.gradle.kts);
+# on desktop hosts (`cargo build --workspace`) the cfg guard in src/lib.rs
+# makes it an empty cdylib that merely proves the member still compiles.
+[package]
+name = "tapview-android"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "tapview_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+tapview = { path = "../.." }
+# Same eframe feature set as tapview's own Android declaration; features only
+# ever union, so this cannot re-add the desktop wayland/x11 backends.
+eframe = { version = "0.31", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "android-native-activity",
+] }
+# Only for the `AndroidApp` type (re-exported from android-activity), so the
+# version is exactly the one eframe resolved rather than a hand-matched pin.
+winit = { version = "0.30", default-features = false, features = [
+    "android-native-activity",
+] }
+log = "0.4"
+android_logger = "0.14"

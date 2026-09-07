@@ -1,2 +1,10 @@
 target
 result
+
+# Android build outputs (Gradle + the cargo-ndk-produced .so).
+/android/.gradle
+/android/build
+/android/app/build
+/android/app/src/main/jniLibs
+/android/local.properties
+/android/.kotlin

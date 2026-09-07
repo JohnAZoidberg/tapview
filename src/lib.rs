@@ -5,7 +5,15 @@
 //! re-declaring modules privately) is what lets other front ends — an
 //! Android `cdylib`, a browser build — run the same [`app::TapviewApp`].
 
+/// The Android front end: device picker, session assembly, eframe entry.
+#[cfg(target_os = "android")]
+pub mod android;
+/// The Android USB transport: HID reports over the Kotlin `UsbBridge` via
+/// JNI, because Android has no `/dev/hidraw*`.
+#[cfg(target_os = "android")]
+pub mod android_hid;
 pub mod app;
+#[cfg(not(target_os = "android"))]
 pub mod cli;
 pub mod config;
 pub mod dimensions;
