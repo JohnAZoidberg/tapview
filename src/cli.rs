@@ -96,6 +96,7 @@ struct Cli {
 /// Entry point of the native command-line binary.
 pub fn main() {
     let cli = Cli::parse();
+    init_logging(cli.verbose);
     let trails = cli.trails.min(20);
 
     // --- Playback mode: no device needed ---
@@ -103,11 +104,11 @@ pub fn main() {
         let rec = match recording::Recording::load(play_path) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Failed to load recording: {}", e);
+                log::error!("Failed to load recording: {}", e);
                 std::process::exit(1);
             }
         };
-        eprintln!(
+        log::info!(
             "Loaded recording: {} frames, {:.1}s",
             rec.frames.len(),
             rec.duration_secs()
@@ -164,7 +165,7 @@ pub fn main() {
     let devices = match devices {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Unable to find touchpad: {}", e);
+            log::error!("Unable to find touchpad: {}", e);
             std::process::exit(1);
         }
     };
@@ -178,7 +179,7 @@ pub fn main() {
         match discovery::find_device(&devices, wanted) {
             Some(d) => d.clone(),
             None => {
-                eprintln!("Device {} not found among detected touchpads. Use --list to see available devices.", wanted);
+                log::error!("Device {} not found among detected touchpads. Use --list to see available devices.", wanted);
                 std::process::exit(1);
             }
         }
@@ -190,12 +191,12 @@ pub fn main() {
         match discovery::prompt_for_device(&devices) {
             Some(d) => d,
             None => {
-                eprintln!("No device selected.");
+                log::error!("No device selected.");
                 std::process::exit(1);
             }
         }
     };
-    eprintln!("Found touchpad: {}", device);
+    log::info!("Found touchpad: {}", device);
 
     // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
     #[cfg(target_os = "linux")]
@@ -209,7 +210,7 @@ pub fn main() {
     } else {
         let cfg = config::discover(&device.devnode);
         if cfg.is_none() && cli.config {
-            eprintln!("config: no PTP configuration features found");
+            log::error!("config: no PTP configuration features found");
             std::process::exit(1);
         }
         cfg
@@ -217,19 +218,22 @@ pub fn main() {
 
     // Log and compare axis ranges from both sources
     if let Some((ex, ey)) = &evdev_extents {
-        eprintln!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
+        log::info!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
     }
     let axis_swap_detected = if let Some(cfg) = &ptp_config {
         if let Some(phys) = &cfg.physical_size {
-            eprintln!(
+            log::info!(
                 "axis: HID descriptor: x={}..{}, y={}..{}",
-                phys.x.logical_min, phys.x.logical_max, phys.y.logical_min, phys.y.logical_max
+                phys.x.logical_min,
+                phys.x.logical_max,
+                phys.y.logical_min,
+                phys.y.logical_max
             );
             if let Some((ex, ey)) = &evdev_extents {
                 if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
-                    eprintln!("axis: evdev and HID descriptor disagree!");
+                    log::warn!("axis: evdev and HID descriptor disagree!");
                     if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
-                        eprintln!("axis: looks like a kernel axis swap");
+                        log::warn!("axis: looks like a kernel axis swap");
                         Some(true)
                     } else {
                         Some(false)
@@ -376,7 +380,7 @@ pub fn main() {
         let mut cfg = match ptp_config {
             Some(c) => c,
             None => {
-                eprintln!("config: device has no PTP/haptic configuration features");
+                log::error!("config: device has no PTP/haptic configuration features");
                 std::process::exit(1);
             }
         };
@@ -390,14 +394,14 @@ pub fn main() {
                 cfg.haptic_intensity_range.as_ref(),
             );
             if !matches!(value, 0 | 25 | 50 | 75 | 100) {
-                eprintln!(
+                log::error!(
                     "config: haptic intensity must be one of 0, 25, 50, 75, 100 (got {})",
                     value
                 );
                 std::process::exit(1);
             }
             if let Err(e) = cfg.set_haptic_intensity(value) {
-                eprintln!("config: failed to set haptic intensity: {}", e);
+                log::error!("config: failed to set haptic intensity: {}", e);
                 std::process::exit(1);
             }
             println!("haptic intensity set to {}", value);
@@ -412,7 +416,7 @@ pub fn main() {
                 cfg.button_press_threshold_range.as_ref(),
             );
             if let Err(e) = cfg.set_button_press_threshold(value) {
-                eprintln!("config: failed to set click force: {}", e);
+                log::error!("config: failed to set click force: {}", e);
                 std::process::exit(1);
             }
             println!("click force set to {}", value);
@@ -435,11 +439,11 @@ pub fn main() {
         let (ex, ey) = record_extents.unwrap_or((0, 0));
         match recording::Recorder::new(record_path, ex, ey) {
             Ok(r) => {
-                eprintln!("Recording to: {}", record_path);
+                log::info!("Recording to: {}", record_path);
                 Some(r)
             }
             Err(e) => {
-                eprintln!("Failed to create recording file: {}", e);
+                log::error!("Failed to create recording file: {}", e);
                 std::process::exit(1);
             }
         }
@@ -453,14 +457,13 @@ pub fn main() {
 
     // Spawn input thread
     let device_path = device.devnode.clone();
-    let verbose = cli.verbose;
 
     #[cfg(target_os = "linux")]
     thread::spawn(move || {
-        let mut backend = match EvdevBackend::open_with_verbose(&device_path, verbose) {
+        let mut backend = match EvdevBackend::open(&device_path) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Failed to open device: {}", e);
+                log::error!("Failed to open device: {}", e);
                 return;
             }
         };
@@ -471,12 +474,12 @@ pub fn main() {
                 match cmd {
                     GrabCommand::Grab => {
                         if let Err(e) = backend.grab() {
-                            eprintln!("Grab failed: {}", e);
+                            log::error!("Grab failed: {}", e);
                         }
                     }
                     GrabCommand::Ungrab => {
                         if let Err(e) = backend.ungrab() {
-                            eprintln!("Ungrab failed: {}", e);
+                            log::error!("Ungrab failed: {}", e);
                         }
                     }
                 }
@@ -490,7 +493,7 @@ pub fn main() {
                     thread::sleep(Duration::from_millis(5));
                 }
                 Err(e) => {
-                    eprintln!("Input error: {}", e);
+                    log::error!("Input error: {}", e);
                     break;
                 }
             }
@@ -499,11 +502,10 @@ pub fn main() {
 
     #[cfg(target_os = "windows")]
     thread::spawn(move || {
-        let _ = verbose; // verbose logging not yet implemented for Windows
         let mut backend = match WindowsBackend::open(&device_path) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Failed to open device: {}", e);
+                log::error!("Failed to open device: {}", e);
                 return;
             }
         };
@@ -513,12 +515,12 @@ pub fn main() {
                 match cmd {
                     GrabCommand::Grab => {
                         if let Err(e) = backend.grab() {
-                            eprintln!("Grab failed: {}", e);
+                            log::error!("Grab failed: {}", e);
                         }
                     }
                     GrabCommand::Ungrab => {
                         if let Err(e) = backend.ungrab() {
-                            eprintln!("Ungrab failed: {}", e);
+                            log::error!("Ungrab failed: {}", e);
                         }
                     }
                 }
@@ -532,7 +534,7 @@ pub fn main() {
                     thread::sleep(Duration::from_millis(5));
                 }
                 Err(e) => {
-                    eprintln!("Input error: {}", e);
+                    log::error!("Input error: {}", e);
                     break;
                 }
             }
@@ -602,6 +604,27 @@ pub fn main() {
     .expect("Failed to run eframe");
 }
 
+/// Route `log` output to stderr as plain lines, the way the old `eprintln!`
+/// diagnostics looked. `RUST_LOG` takes precedence when set; otherwise our
+/// own crate logs at info, or at debug with `--verbose` (which is where the
+/// raw evdev event dump lives).
+fn init_logging(verbose: bool) {
+    use std::io::Write;
+    let mut builder = env_logger::Builder::new();
+    builder.format(|buf, record| writeln!(buf, "{}", record.args()));
+    if std::env::var_os("RUST_LOG").is_some() {
+        builder.parse_default_env();
+    } else {
+        let level = if verbose {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Info
+        };
+        builder.filter_module("tapview", level);
+    }
+    builder.init();
+}
+
 /// Validate a CLI-provided value against a feature's presence/writability/range.
 /// Exits the process with a clear error message on any check failure.
 fn check_set_value(
@@ -612,19 +635,22 @@ fn check_set_value(
     range: Option<&config::ValueRange>,
 ) {
     if !has_feature {
-        eprintln!("config: device does not expose {}", label);
+        log::error!("config: device does not expose {}", label);
         std::process::exit(1);
     }
     if !writable {
-        eprintln!("config: {} is read-only on this device", label);
+        log::error!("config: {} is read-only on this device", label);
         std::process::exit(1);
     }
     if let Some(r) = range {
         let v = value as i32;
         if v < r.logical_min || v > r.logical_max {
-            eprintln!(
+            log::error!(
                 "config: {} value {} out of range ({}..={})",
-                label, value, r.logical_min, r.logical_max
+                label,
+                value,
+                r.logical_min,
+                r.logical_max
             );
             std::process::exit(1);
         }
@@ -639,10 +665,10 @@ fn spawn_heatmap(
 ) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
     match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
         Ok(hidraw_path) => {
-            eprintln!("heatmap: found hidraw device: {}", hidraw_path.display());
+            log::info!("heatmap: found hidraw device: {}", hidraw_path.display());
             match heatmap::discovery::determine_burst_report_length(&hidraw_path) {
                 Ok(burst_len) => {
-                    eprintln!("heatmap: burst report length = {}", burst_len);
+                    log::info!("heatmap: burst report length = {}", burst_len);
                     Some(heatmap::backend::spawn_heatmap_thread(
                         &hidraw_path,
                         burst_len,
@@ -651,7 +677,7 @@ fn spawn_heatmap(
                 }
                 Err(e) => {
                     if force {
-                        eprintln!("heatmap: failed to determine burst length: {}", e);
+                        log::error!("heatmap: failed to determine burst length: {}", e);
                         std::process::exit(1);
                     }
                     None
@@ -660,7 +686,7 @@ fn spawn_heatmap(
         }
         Err(e) => {
             if force {
-                eprintln!("heatmap: failed to find sibling hidraw device: {}", e);
+                log::error!("heatmap: failed to find sibling hidraw device: {}", e);
                 std::process::exit(1);
             }
             None
@@ -676,7 +702,7 @@ fn spawn_heatmap(
 ) -> Option<std::sync::mpsc::Receiver<heatmap::HeatmapFrame>> {
     match heatmap::discovery::find_hid_device_for_heatmap(&device.devnode) {
         Ok((hid_path, burst_len)) => {
-            eprintln!(
+            log::info!(
                 "heatmap: found HID device: {}, burst_len={}",
                 hid_path.display(),
                 burst_len
@@ -689,7 +715,7 @@ fn spawn_heatmap(
         }
         Err(e) => {
             if force {
-                eprintln!("heatmap: {}", e);
+                log::error!("heatmap: {}", e);
                 std::process::exit(1);
             }
             None

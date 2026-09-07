@@ -516,7 +516,7 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
     let hidraw_path = match find_sibling_hidraw(evdev_path) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("config: failed to find hidraw device: {}", e);
+            log::error!("config: failed to find hidraw device: {}", e);
             return None;
         }
     };
@@ -526,7 +526,7 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
     let desc = match fs::read(&desc_path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("config: failed to read report descriptor: {}", e);
+            log::error!("config: failed to read report descriptor: {}", e);
             return None;
         }
     };
@@ -564,12 +564,12 @@ pub fn discover(evdev_path: &Path) -> Option<PtpConfig> {
     let device = match HidrawDevice::open(&hidraw_path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("config: failed to open hidraw device: {}", e);
+            log::error!("config: failed to open hidraw device: {}", e);
             return None;
         }
     };
 
-    eprintln!("config: found PTP features on {}", hidraw_path.display());
+    log::info!("config: found PTP features on {}", hidraw_path.display());
 
     let mut backend = LinuxConfigBackend {
         device,

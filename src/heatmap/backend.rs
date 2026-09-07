@@ -20,7 +20,7 @@ pub fn spawn_heatmap_thread(
         let dev: Box<dyn HidDevice> = match open_hid_device(&path) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("heatmap: failed to open {}: {}", path.display(), e);
+                log::error!("heatmap: failed to open {}: {}", path.display(), e);
                 return;
             }
         };
@@ -50,7 +50,7 @@ fn run_heatmap_loop(
     let chip = match identify_chip(dev) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("heatmap: failed to identify chip: {}", e);
+            log::error!("heatmap: failed to identify chip: {}", e);
             return;
         }
     };
@@ -58,14 +58,17 @@ fn run_heatmap_loop(
     let (rows, cols) = match read_matrix_dims(dev, chip) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("heatmap: failed to read matrix dimensions: {}", e);
+            log::error!("heatmap: failed to read matrix dimensions: {}", e);
             return;
         }
     };
 
-    eprintln!(
+    log::info!(
         "heatmap: {} detected, {}x{} matrix, burst_len={}",
-        chip, rows, cols, burst_len
+        chip,
+        rows,
+        cols,
+        burst_len
     );
 
     // Dump candidate dimension registers for unknown/new chips
@@ -76,7 +79,7 @@ fn run_heatmap_loop(
     // Display cols can be overridden for stride debugging
     let display_cols = cols_override.unwrap_or(cols);
     if cols_override.is_some() {
-        eprintln!("heatmap: display cols overridden to {}", display_cols);
+        log::info!("heatmap: display cols overridden to {}", display_cols);
     }
 
     loop {
@@ -95,7 +98,7 @@ fn run_heatmap_loop(
                 }
             }
             Err(e) => {
-                eprintln!("heatmap: frame read error: {}", e);
+                log::error!("heatmap: frame read error: {}", e);
                 break;
             }
         }
@@ -103,11 +106,11 @@ fn run_heatmap_loop(
 }
 
 fn probe_dimension_registers(dev: &dyn HidDevice) {
-    eprintln!("heatmap: --- PJP343 register probe ---");
+    log::info!("heatmap: --- PJP343 register probe ---");
 
     // PJP274 style: UserBank 0, 0x6E/0x6F
     if let (Ok(s), Ok(d)) = (read_user_reg(dev, 0, 0x6E), read_user_reg(dev, 0, 0x6F)) {
-        eprintln!("  UserBank0 0x6E(senses)={} 0x6F(drives)={}", s, d);
+        log::info!("  UserBank0 0x6E(senses)={} 0x6F(drives)={}", s, d);
     }
     // Check adjacent registers for 16-bit values
     if let (Ok(a), Ok(b), Ok(c), Ok(d)) = (
@@ -116,26 +119,26 @@ fn probe_dimension_registers(dev: &dyn HidDevice) {
         read_user_reg(dev, 0, 0x70),
         read_user_reg(dev, 0, 0x71),
     ) {
-        eprintln!("  UserBank0 0x6C={} 0x6D={} 0x70={} 0x71={}", a, b, c, d);
+        log::info!("  UserBank0 0x6C={} 0x6D={} 0x70={} 0x71={}", a, b, c, d);
     }
 
     // PJP255 style: UserBank 0, 0x59/0x5A
     if let (Ok(s), Ok(d)) = (read_user_reg(dev, 0, 0x59), read_user_reg(dev, 0, 0x5A)) {
-        eprintln!("  UserBank0 0x59(senses)={} 0x5A(drives)={}", s, d);
+        log::info!("  UserBank0 0x59(senses)={} 0x5A(drives)={}", s, d);
     }
 
     // PLP239 style: Bank 9, 0x01/0x02
     if let (Ok(d), Ok(s)) = (read_reg(dev, 9, 0x01), read_reg(dev, 9, 0x02)) {
-        eprintln!("  Bank9 0x01(drives)={} 0x02(senses)={}", d, s);
+        log::info!("  Bank9 0x01(drives)={} 0x02(senses)={}", d, s);
     }
 
     // Scan UserBank 0 around 0x60-0x7F for anything that looks like a dimension
-    eprint!("  UserBank0 0x60..0x7F:");
+    let mut scan = String::from("  UserBank0 0x60..0x7F:");
     for addr in 0x60..=0x7F {
         if let Ok(v) = read_user_reg(dev, 0, addr) {
-            eprint!(" {:02X}={}", addr, v);
+            scan.push_str(&format!(" {:02X}={}", addr, v));
         }
     }
-    eprintln!();
-    eprintln!("heatmap: --- end probe ---");
+    log::info!("{}", scan);
+    log::info!("heatmap: --- end probe ---");
 }

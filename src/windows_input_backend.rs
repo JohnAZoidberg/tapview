@@ -20,7 +20,7 @@ pub fn spawn_windows_input_thread() -> mpsc::Receiver<LibinputEvent> {
 
     std::thread::spawn(move || {
         if let Err(e) = run_mouse_hook_loop(tx) {
-            eprintln!("Windows input backend error: {}", e);
+            log::error!("Windows input backend error: {}", e);
         }
     });
 
@@ -45,7 +45,7 @@ fn run_mouse_hook_loop(tx: mpsc::Sender<LibinputEvent>) -> Result<(), Box<dyn st
         let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_ll_proc), None, 0)
             .map_err(|e| format!("SetWindowsHookExW: {}", e))?;
 
-        eprintln!("Windows mouse input backend started (low-level hook)");
+        log::info!("Windows mouse input backend started (low-level hook)");
 
         // A message pump is required for WH_MOUSE_LL to work.
         let mut msg = MSG::default();

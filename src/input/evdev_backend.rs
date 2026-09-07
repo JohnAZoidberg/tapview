@@ -21,25 +21,17 @@ pub fn read_axis_extents(device_path: &Path) -> Option<(i32, i32)> {
 pub struct EvdevBackend {
     device: Device,
     machine: MTStateMachine,
-    verbose: bool,
 }
 
-impl EvdevBackend {
-    pub fn open_with_verbose(device_path: &Path, verbose: bool) -> Result<Self, InputError> {
+impl InputBackend for EvdevBackend {
+    fn open(device_path: &Path) -> Result<Self, InputError> {
         let device = Device::open(device_path)
             .map_err(|e| InputError::OpenFailed(format!("{}: {}", device_path.display(), e)))?;
 
         Ok(Self {
             device,
             machine: MTStateMachine::new(),
-            verbose,
         })
-    }
-}
-
-impl InputBackend for EvdevBackend {
-    fn open(device_path: &Path) -> Result<Self, InputError> {
-        Self::open_with_verbose(device_path, false)
     }
 
     fn grab(&mut self) -> Result<(), InputError> {
@@ -58,9 +50,8 @@ impl InputBackend for EvdevBackend {
         match self.device.fetch_events() {
             Ok(events) => {
                 for event in events {
-                    if self.verbose {
-                        multitouch::print_event(&event);
-                    }
+                    // Raw event dump; a no-op unless debug logging is on (--verbose).
+                    multitouch::print_event(&event);
                     self.machine.process(&event);
                 }
                 Ok(Some(TouchState {

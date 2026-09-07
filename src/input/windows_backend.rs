@@ -30,7 +30,7 @@ impl InputBackend for WindowsBackend {
 
         let thread = std::thread::spawn(move || {
             if let Err(e) = run_rawinput_loop(tx) {
-                eprintln!("RawInput thread error: {}", e);
+                log::error!("RawInput thread error: {}", e);
             }
         });
 

@@ -202,6 +202,9 @@ impl MTStateMachine {
 
 #[cfg(target_os = "linux")]
 pub fn print_event(event: &InputEvent) {
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
     let type_name = match event.event_type() {
         EventType::KEY => "EV_KEY",
         EventType::ABSOLUTE => "EV_ABS",
@@ -211,8 +214,8 @@ pub fn print_event(event: &InputEvent) {
     };
     let code_name = code_lookup(event.code());
     match code_name {
-        Some(name) => eprintln!("  {}({}, {})", type_name, name, event.value()),
-        None => eprintln!("  {}(0x{:X}, {})", type_name, event.code(), event.value()),
+        Some(name) => log::debug!("  {}({}, {})", type_name, name, event.value()),
+        None => log::debug!("  {}(0x{:X}, {})", type_name, event.code(), event.value()),
     }
 }
 

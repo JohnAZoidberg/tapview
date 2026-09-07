@@ -39,7 +39,7 @@ pub fn spawn_libinput_thread(device_path: &Path) -> mpsc::Receiver<LibinputEvent
 
     thread::spawn(move || {
         if let Err(e) = run_libinput_loop(&path, &tx) {
-            eprintln!("libinput backend error: {}", e);
+            log::error!("libinput backend error: {}", e);
         }
     });
 

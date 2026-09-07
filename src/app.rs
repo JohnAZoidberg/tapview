@@ -130,7 +130,7 @@ impl eframe::App for TapviewApp {
                 // Record each frame
                 if let Some(ref mut recorder) = self.recorder {
                     if let Err(e) = recorder.record(&state) {
-                        eprintln!("Recording error: {}", e);
+                        log::error!("Recording error: {}", e);
                         self.recorder = None;
                     }
                 }

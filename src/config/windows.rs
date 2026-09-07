@@ -429,7 +429,7 @@ unsafe fn check_hid_device_for_config(
         }
     };
 
-    eprintln!("config: found PTP features on {}", device_path);
+    log::info!("config: found PTP features on {}", device_path);
 
     let mut backend = WindowsConfigBackend {
         device,

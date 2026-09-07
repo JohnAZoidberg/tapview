@@ -551,7 +551,7 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
                     });
                 if new_mode != mode {
                     if let Err(e) = config.set_input_mode(new_mode) {
-                        eprintln!("config: failed to set input mode: {}", e);
+                        log::error!("config: failed to set input mode: {}", e);
                     }
                 }
             } else {
@@ -586,7 +586,7 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
 
         if surface != surface_prev || button != button_prev {
             if let Err(e) = config.set_selective_reporting(surface, button) {
-                eprintln!("config: failed to set selective reporting: {}", e);
+                log::error!("config: failed to set selective reporting: {}", e);
             }
         }
     }
@@ -601,7 +601,7 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
             );
             if high != prev {
                 if let Err(e) = config.set_latency_mode(high) {
-                    eprintln!("config: failed to set latency mode: {}", e);
+                    log::error!("config: failed to set latency mode: {}", e);
                 }
             }
         }
@@ -634,7 +634,7 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
             }
             if new_threshold != threshold {
                 if let Err(e) = config.set_button_press_threshold(new_threshold) {
-                    eprintln!("config: failed to set click force: {}", e);
+                    log::error!("config: failed to set click force: {}", e);
                 }
             }
         }
@@ -663,7 +663,7 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
             );
             if intensity != prev {
                 if let Err(e) = config.set_haptic_intensity(intensity) {
-                    eprintln!("config: failed to set haptic intensity: {}", e);
+                    log::error!("config: failed to set haptic intensity: {}", e);
                 }
             }
         }
