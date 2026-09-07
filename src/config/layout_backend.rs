@@ -208,62 +208,66 @@ impl<D: HidDevice> LayoutConfigBackend<D> {
         buf
     }
 
-    fn read_field(&self, key: FieldKey) -> Option<u32> {
+    async fn read_field(&self, key: FieldKey) -> Option<u32> {
         let field = self.fields.fields.get(&key)?;
         let mut buf = self.report_buf(field);
-        pollster::block_on(self.device.get_feature(&mut buf)).ok()?;
+        self.device.get_feature(&mut buf).await.ok()?;
         Some(extract_bits(&buf[1..], field.bit_offset, field.bit_size))
     }
 
-    fn write_field(&self, key: FieldKey, value: u32) -> io::Result<()> {
+    async fn write_field(&self, key: FieldKey, value: u32) -> io::Result<()> {
         let field =
             self.fields.fields.get(&key).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, "feature field not found")
             })?;
         let mut buf = self.report_buf(field);
         // Read-modify-write
-        pollster::block_on(self.device.get_feature(&mut buf))?;
+        self.device.get_feature(&mut buf).await?;
         insert_bits(&mut buf[1..], field.bit_offset, field.bit_size, value);
-        pollster::block_on(self.device.set_feature(&buf))
+        self.device.set_feature(&buf).await
     }
 }
 
-impl<D: HidDevice + Send> ConfigBackend for LayoutConfigBackend<D> {
-    fn read_all(&mut self) -> ConfigValues {
+impl<D: HidDevice> ConfigBackend for LayoutConfigBackend<D> {
+    async fn read_all(&mut self) -> ConfigValues {
         ConfigValues {
-            input_mode: self.read_field(KEY_INPUT_MODE).map(|v| v as u8),
-            surface_switch: self.read_field(KEY_SURFACE_SWITCH).map(|v| v != 0),
-            button_switch: self.read_field(KEY_BUTTON_SWITCH).map(|v| v != 0),
-            contact_count_max: self.read_field(KEY_CONTACT_COUNT_MAX).map(|v| v as u8),
-            pad_type: self.read_field(KEY_PAD_TYPE).map(|v| v as u8),
-            latency_mode: self.read_field(KEY_LATENCY_MODE).map(|v| v != 0),
+            input_mode: self.read_field(KEY_INPUT_MODE).await.map(|v| v as u8),
+            surface_switch: self.read_field(KEY_SURFACE_SWITCH).await.map(|v| v != 0),
+            button_switch: self.read_field(KEY_BUTTON_SWITCH).await.map(|v| v != 0),
+            contact_count_max: self
+                .read_field(KEY_CONTACT_COUNT_MAX)
+                .await
+                .map(|v| v as u8),
+            pad_type: self.read_field(KEY_PAD_TYPE).await.map(|v| v as u8),
+            latency_mode: self.read_field(KEY_LATENCY_MODE).await.map(|v| v != 0),
         }
     }
 
-    fn write_input_mode(&mut self, value: u8) -> io::Result<()> {
-        self.write_field(KEY_INPUT_MODE, value as u32)
+    async fn write_input_mode(&mut self, value: u8) -> io::Result<()> {
+        self.write_field(KEY_INPUT_MODE, value as u32).await
     }
 
-    fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()> {
+    async fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()> {
         if self.fields.has(KEY_SURFACE_SWITCH) {
-            self.write_field(KEY_SURFACE_SWITCH, surface as u32)?;
+            self.write_field(KEY_SURFACE_SWITCH, surface as u32).await?;
         }
         if self.fields.has(KEY_BUTTON_SWITCH) {
-            self.write_field(KEY_BUTTON_SWITCH, button as u32)?;
+            self.write_field(KEY_BUTTON_SWITCH, button as u32).await?;
         }
         Ok(())
     }
 
-    fn write_latency_mode(&mut self, high: bool) -> io::Result<()> {
-        self.write_field(KEY_LATENCY_MODE, high as u32)
+    async fn write_latency_mode(&mut self, high: bool) -> io::Result<()> {
+        self.write_field(KEY_LATENCY_MODE, high as u32).await
     }
 
-    fn write_button_press_threshold(&mut self, value: u8) -> io::Result<()> {
+    async fn write_button_press_threshold(&mut self, value: u8) -> io::Result<()> {
         self.write_field(KEY_BUTTON_PRESS_THRESHOLD, value as u32)
+            .await
     }
 
-    fn write_haptic_intensity(&mut self, value: u8) -> io::Result<()> {
-        self.write_field(KEY_HAPTIC_INTENSITY, value as u32)
+    async fn write_haptic_intensity(&mut self, value: u8) -> io::Result<()> {
+        self.write_field(KEY_HAPTIC_INTENSITY, value as u32).await
     }
 }
 

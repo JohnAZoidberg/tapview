@@ -1,4 +1,4 @@
-use super::{ConfigBackend, ConfigValues, PtpConfig, PtpFeatures, ValueRange};
+use super::{ConfigBackend, ConfigDescription, ConfigValues, Discovered, PtpFeatures, ValueRange};
 use crate::heatmap::discovery::{extract_parent_device_id, pcwstr_to_string};
 use crate::heatmap::windows_hid::WinHidDevice;
 use crate::heatmap::HidDevice;
@@ -29,7 +29,9 @@ struct PtpUsageInfo {
     range: ValueRange,
 }
 
-struct WindowsConfigBackend {
+/// PTP config over the Windows HID parsing API (HidP), which locates fields
+/// from preparsed data instead of our descriptor model.
+pub struct WindowsConfigBackend {
     device: WinHidDevice,
     preparsed: isize, // PHIDP_PREPARSED_DATA stored as isize for Send
     feature_report_len: usize,
@@ -109,7 +111,7 @@ impl WindowsConfigBackend {
 }
 
 impl ConfigBackend for WindowsConfigBackend {
-    fn read_all(&mut self) -> ConfigValues {
+    async fn read_all(&mut self) -> ConfigValues {
         ConfigValues {
             input_mode: self
                 .input_mode
@@ -144,7 +146,7 @@ impl ConfigBackend for WindowsConfigBackend {
         }
     }
 
-    fn write_input_mode(&mut self, value: u8) -> io::Result<()> {
+    async fn write_input_mode(&mut self, value: u8) -> io::Result<()> {
         let info = self
             .input_mode
             .as_ref()
@@ -152,7 +154,7 @@ impl ConfigBackend for WindowsConfigBackend {
         self.write_usage_value(info, value as u32)
     }
 
-    fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()> {
+    async fn write_selective_reporting(&mut self, surface: bool, button: bool) -> io::Result<()> {
         if let Some(info) = &self.surface_switch {
             self.write_usage_value(info, surface as u32)?;
         }
@@ -162,7 +164,7 @@ impl ConfigBackend for WindowsConfigBackend {
         Ok(())
     }
 
-    fn write_latency_mode(&mut self, high: bool) -> io::Result<()> {
+    async fn write_latency_mode(&mut self, high: bool) -> io::Result<()> {
         let info = self
             .latency_mode
             .as_ref()
@@ -170,7 +172,7 @@ impl ConfigBackend for WindowsConfigBackend {
         self.write_usage_value(info, high as u32)
     }
 
-    fn write_button_press_threshold(&mut self, value: u8) -> io::Result<()> {
+    async fn write_button_press_threshold(&mut self, value: u8) -> io::Result<()> {
         let info = self.button_press_threshold.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -180,7 +182,7 @@ impl ConfigBackend for WindowsConfigBackend {
         self.write_usage_value(info, value as u32)
     }
 
-    fn write_haptic_intensity(&mut self, value: u8) -> io::Result<()> {
+    async fn write_haptic_intensity(&mut self, value: u8) -> io::Result<()> {
         let info = self.haptic_intensity.as_ref().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "haptic intensity not supported")
         })?;
@@ -190,12 +192,12 @@ impl ConfigBackend for WindowsConfigBackend {
 
 // ── Discovery ─────────────────────────────────────────────────────────────────
 
-pub fn discover(touchpad_path: &Path) -> Option<PtpConfig> {
+pub fn discover(touchpad_path: &Path) -> Option<Discovered> {
     let parent_id = extract_parent_device_id(touchpad_path);
     unsafe { discover_inner(parent_id.as_deref()) }
 }
 
-unsafe fn discover_inner(parent_id: Option<&str>) -> Option<PtpConfig> {
+unsafe fn discover_inner(parent_id: Option<&str>) -> Option<Discovered> {
     let hid_guid = HidD_GetHidGuid();
 
     let dev_info = SetupDiGetClassDevsW(
@@ -207,7 +209,7 @@ unsafe fn discover_inner(parent_id: Option<&str>) -> Option<PtpConfig> {
     .ok()?;
 
     let mut index = 0u32;
-    let mut result: Option<PtpConfig> = None;
+    let mut result: Option<Discovered> = None;
 
     loop {
         let mut interface_data = SP_DEVICE_INTERFACE_DATA {
@@ -238,7 +240,7 @@ unsafe fn check_hid_device_for_config(
     dev_info: HDEVINFO,
     interface_data: &mut SP_DEVICE_INTERFACE_DATA,
     parent_id: Option<&str>,
-) -> Option<PtpConfig> {
+) -> Option<Discovered> {
     // Get device path
     let mut required_size = 0u32;
     let _ = SetupDiGetDeviceInterfaceDetailW(
@@ -431,7 +433,7 @@ unsafe fn check_hid_device_for_config(
 
     log::info!("config: found PTP features on {}", device_path);
 
-    let mut backend = WindowsConfigBackend {
+    let backend = WindowsConfigBackend {
         device,
         preparsed: preparsed_data.0,
         feature_report_len: caps.FeatureReportByteLength as usize,
@@ -445,27 +447,13 @@ unsafe fn check_hid_device_for_config(
         haptic_intensity,
     };
 
-    let values = backend.read_all();
-
-    // Click force / haptic intensity are write-only on this firmware; seed startup defaults.
-    let button_press_threshold = features.has_button_press_threshold.then_some(2);
-    let haptic_intensity = features.has_haptic_intensity.then_some(50);
-
-    let mut config = PtpConfig {
-        features,
-        input_mode: values.input_mode,
-        surface_switch: values.surface_switch,
-        button_switch: values.button_switch,
-        contact_count_max: values.contact_count_max,
-        pad_type: values.pad_type,
-        latency_mode: values.latency_mode,
-        button_press_threshold,
-        button_press_threshold_range,
-        haptic_intensity,
-        haptic_intensity_range,
-        physical_size: None,
-        backend: Box::new(backend),
-    };
-    config.probe_writable();
-    Some(config)
+    Some(Discovered {
+        description: ConfigDescription {
+            features,
+            button_press_threshold_range,
+            haptic_intensity_range,
+            physical_size: None,
+        },
+        backend,
+    })
 }

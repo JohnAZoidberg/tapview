@@ -1,4 +1,4 @@
-use crate::config::PtpConfig;
+use crate::config::ConfigHandle;
 use crate::dimensions::Dimensions;
 use crate::heatmap::HeatmapFrame;
 use crate::input::TouchState;
@@ -25,7 +25,7 @@ pub struct TapviewApp {
     libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
     heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
     heatmap_frame: Option<HeatmapFrame>,
-    ptp_config: Option<PtpConfig>,
+    ptp_config: Option<ConfigHandle>,
     dims: Dimensions,
     current_touches: [TouchData; MAX_TOUCH_POINTS],
     buttons: ButtonState,
@@ -51,7 +51,7 @@ impl TapviewApp {
         grab_tx: mpsc::Sender<GrabCommand>,
         libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
         heatmap_rx: Option<mpsc::Receiver<HeatmapFrame>>,
-        ptp_config: Option<PtpConfig>,
+        ptp_config: Option<ConfigHandle>,
         evdev_extents: Option<(i32, i32)>,
         trails: usize,
         recorder: Option<Recorder>,
@@ -180,6 +180,8 @@ impl eframe::App for TapviewApp {
 
         // Show config left panel if available
         if let Some(config) = &mut self.ptp_config {
+            // Apply results (and reverts) of writes the worker finished
+            config.pump();
             egui::SidePanel::left("config_panel")
                 .default_width(200.0)
                 .min_width(160.0)

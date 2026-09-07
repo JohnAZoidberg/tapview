@@ -1,4 +1,4 @@
-use crate::config::PtpConfig;
+use crate::config::ConfigHandle;
 use crate::heatmap::HeatmapFrame;
 use crate::libinput_state::{GestureKind, LibinputState};
 use crate::multitouch::{ButtonState, TouchData};
@@ -482,13 +482,13 @@ pub fn click_force_label(level: u8) -> &'static str {
 }
 
 /// Draw the PTP configuration panel contents.
-pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
+pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut ConfigHandle) {
     ui.heading("Device Config");
     ui.separator();
 
     // --- Read-only info ---
-    if config.features.has_pad_type {
-        if let Some(pt) = config.pad_type {
+    if config.description.features.has_pad_type {
+        if let Some(pt) = config.state.pad_type {
             ui.horizontal(|ui| {
                 ui.label("Pad Type:");
                 ui.strong(pad_type_label(pt));
@@ -496,8 +496,8 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
         }
     }
 
-    if config.features.has_contact_count_max {
-        if let Some(max) = config.contact_count_max {
+    if config.description.features.has_contact_count_max {
+        if let Some(max) = config.state.contact_count_max {
             ui.horizontal(|ui| {
                 ui.label("Max Contacts:");
                 ui.strong(format!("{}", max));
@@ -505,7 +505,7 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
         }
     }
 
-    if let Some(phys) = &config.physical_size {
+    if let Some(phys) = &config.description.physical_size {
         ui.horizontal(|ui| {
             ui.label("Physical Size:");
             ui.strong(format!("{:.1} x {:.1} mm", phys.x.size_mm, phys.y.size_mm));
@@ -531,17 +531,17 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
         });
     }
 
-    if config.features.has_pad_type
-        || config.features.has_contact_count_max
-        || config.physical_size.is_some()
+    if config.description.features.has_pad_type
+        || config.description.features.has_contact_count_max
+        || config.description.physical_size.is_some()
     {
         ui.separator();
     }
 
     // --- Input Mode ---
-    if config.features.has_input_mode {
-        if let Some(mode) = config.input_mode {
-            if config.features.input_mode_writable {
+    if config.description.features.has_input_mode {
+        if let Some(mode) = config.state.input_mode {
+            if config.description.features.input_mode_writable {
                 let mut new_mode = mode;
                 egui::ComboBox::from_label("Input Mode")
                     .selected_text(input_mode_label(mode))
@@ -550,9 +550,7 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
                         ui.selectable_value(&mut new_mode, 3, "Precision Touchpad");
                     });
                 if new_mode != mode {
-                    if let Err(e) = config.set_input_mode(new_mode) {
-                        log::error!("config: failed to set input mode: {}", e);
-                    }
+                    config.set_input_mode(new_mode);
                 }
             } else {
                 ui.horizontal(|ui| {
@@ -564,64 +562,66 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
     }
 
     // --- Selective Reporting ---
-    if config.features.has_surface_switch || config.features.has_button_switch {
-        let mut surface = config.surface_switch.unwrap_or(true);
-        let mut button = config.button_switch.unwrap_or(true);
+    if config.description.features.has_surface_switch
+        || config.description.features.has_button_switch
+    {
+        let mut surface = config.state.surface_switch.unwrap_or(true);
+        let mut button = config.state.button_switch.unwrap_or(true);
         let surface_prev = surface;
         let button_prev = button;
 
-        if config.features.has_surface_switch {
+        if config.description.features.has_surface_switch {
             ui.add_enabled(
-                config.features.surface_switch_writable,
+                config.description.features.surface_switch_writable,
                 egui::Checkbox::new(&mut surface, "Surface Switch"),
             );
         }
 
-        if config.features.has_button_switch {
+        if config.description.features.has_button_switch {
             ui.add_enabled(
-                config.features.button_switch_writable,
+                config.description.features.button_switch_writable,
                 egui::Checkbox::new(&mut button, "Button Switch"),
             );
         }
 
         if surface != surface_prev || button != button_prev {
-            if let Err(e) = config.set_selective_reporting(surface, button) {
-                log::error!("config: failed to set selective reporting: {}", e);
-            }
+            config.set_selective_reporting(surface, button);
         }
     }
 
     // --- Latency Mode ---
-    if config.features.has_latency_mode {
-        if let Some(mut high) = config.latency_mode {
+    if config.description.features.has_latency_mode {
+        if let Some(mut high) = config.state.latency_mode {
             let prev = high;
             ui.add_enabled(
-                config.features.latency_mode_writable,
+                config.description.features.latency_mode_writable,
                 egui::Checkbox::new(&mut high, "Low Latency Mode"),
             );
             if high != prev {
-                if let Err(e) = config.set_latency_mode(high) {
-                    log::error!("config: failed to set latency mode: {}", e);
-                }
+                config.set_latency_mode(high);
             }
         }
     }
 
     // --- Click Force / Button Press Threshold ---
-    if config.features.has_button_press_threshold {
-        if let Some(threshold) = config.button_press_threshold {
+    if config.description.features.has_button_press_threshold {
+        if let Some(threshold) = config.state.button_press_threshold {
             let mut new_threshold = threshold;
             let selected_label = click_force_label(threshold);
-            ui.add_enabled_ui(config.features.button_press_threshold_writable, |ui| {
-                egui::ComboBox::from_label("Click Force")
-                    .selected_text(selected_label)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut new_threshold, 1, "Low");
-                        ui.selectable_value(&mut new_threshold, 2, "Medium");
-                        ui.selectable_value(&mut new_threshold, 3, "High");
-                    });
-            });
+            ui.add_enabled_ui(
+                config.description.features.button_press_threshold_writable,
+                |ui| {
+                    egui::ComboBox::from_label("Click Force")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut new_threshold, 1, "Low");
+                            ui.selectable_value(&mut new_threshold, 2, "Medium");
+                            ui.selectable_value(&mut new_threshold, 3, "High");
+                        });
+                },
+            );
             if let Some((pmin, pmax)) = config
+                .description
                 .button_press_threshold_range
                 .as_ref()
                 .and_then(|r| r.physical)
@@ -633,18 +633,17 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
                 );
             }
             if new_threshold != threshold {
-                if let Err(e) = config.set_button_press_threshold(new_threshold) {
-                    log::error!("config: failed to set click force: {}", e);
-                }
+                config.set_button_press_threshold(new_threshold);
             }
         }
     }
 
     // --- Haptic Intensity ---
-    if config.features.has_haptic_intensity {
-        if let Some(mut intensity) = config.haptic_intensity {
+    if config.description.features.has_haptic_intensity {
+        if let Some(mut intensity) = config.state.haptic_intensity {
             let prev = intensity;
             let (lo, hi) = config
+                .description
                 .haptic_intensity_range
                 .as_ref()
                 .map(|r| {
@@ -656,15 +655,13 @@ pub fn draw_config_panel(ui: &mut egui::Ui, config: &mut PtpConfig) {
                 .unwrap_or((0u8, 100u8));
             intensity = intensity.clamp(lo, hi);
             ui.add_enabled(
-                config.features.haptic_intensity_writable,
+                config.description.features.haptic_intensity_writable,
                 egui::Slider::new(&mut intensity, lo..=hi)
                     .step_by(25.0)
                     .text("Haptic Intensity"),
             );
             if intensity != prev {
-                if let Err(e) = config.set_haptic_intensity(intensity) {
-                    log::error!("config: failed to set haptic intensity: {}", e);
-                }
+                config.set_haptic_intensity(intensity);
             }
         }
     }

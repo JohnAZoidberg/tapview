@@ -5,6 +5,7 @@
 use std::io::IsTerminal;
 
 use crate::app::{GrabCommand, TapviewApp};
+use crate::config::{ConfigBackend, ConfigDescription, ConfigState, PlatformConfigBackend};
 #[cfg(target_os = "linux")]
 use crate::discovery::udev_discovery::UdevDiscovery;
 #[cfg(target_os = "windows")]
@@ -208,7 +209,7 @@ pub fn main() {
     let ptp_config = if cli.no_config && !cli.info {
         None
     } else {
-        let cfg = config::discover(&device.devnode);
+        let cfg = config::discover(&device.devnode).map(Ptp::initialize);
         if cfg.is_none() && cli.config {
             log::error!("config: no PTP configuration features found");
             std::process::exit(1);
@@ -221,7 +222,7 @@ pub fn main() {
         log::info!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
     }
     let axis_swap_detected = if let Some(cfg) = &ptp_config {
-        if let Some(phys) = &cfg.physical_size {
+        if let Some(phys) = &cfg.desc.physical_size {
             log::info!(
                 "axis: HID descriptor: x={}..{}, y={}..{}",
                 phys.x.logical_min,
@@ -272,7 +273,7 @@ pub fn main() {
         }
 
         if let Some(cfg) = &ptp_config {
-            if let Some(phys) = &cfg.physical_size {
+            if let Some(phys) = &cfg.desc.physical_size {
                 println!("HID descriptor");
                 println!(
                     "  X logical:        {}..{}",
@@ -302,42 +303,44 @@ pub fn main() {
             }
 
             println!("PTP config");
-            if let Some(mode) = cfg.input_mode {
+            if let Some(mode) = cfg.state.input_mode {
                 println!(
                     "  Input Mode:       {} ({})",
                     render::input_mode_label(mode),
                     mode
                 );
             }
-            if let Some(pt) = cfg.pad_type {
+            if let Some(pt) = cfg.state.pad_type {
                 println!(
                     "  Pad Type:         {} ({})",
                     render::pad_type_label(pt),
                     pt
                 );
             }
-            if let Some(max) = cfg.contact_count_max {
+            if let Some(max) = cfg.state.contact_count_max {
                 println!("  Max Contacts:     {}", max);
             }
-            if cfg.features.has_surface_switch {
+            if cfg.desc.features.has_surface_switch {
                 println!(
                     "  Surface Switch:   {}",
-                    cfg.surface_switch
+                    cfg.state
+                        .surface_switch
                         .map_or("n/a".to_string(), |v| v.to_string())
                 );
             }
-            if cfg.features.has_button_switch {
+            if cfg.desc.features.has_button_switch {
                 println!(
                     "  Button Switch:    {}",
-                    cfg.button_switch
+                    cfg.state
+                        .button_switch
                         .map_or("n/a".to_string(), |v| v.to_string())
                 );
             }
-            if let Some(lat) = cfg.latency_mode {
+            if let Some(lat) = cfg.state.latency_mode {
                 println!("  Latency Mode:     {}", if lat { "low" } else { "normal" });
             }
-            if let Some(thresh) = cfg.button_press_threshold {
-                let range = cfg.button_press_threshold_range.as_ref();
+            if let Some(thresh) = cfg.state.button_press_threshold {
+                let range = cfg.desc.button_press_threshold_range.as_ref();
                 let range_str = range
                     .map(|r| format!(" (range {}..{})", r.logical_min, r.logical_max))
                     .unwrap_or_default();
@@ -347,15 +350,17 @@ pub fn main() {
                     .unwrap_or_default();
                 println!("  Click Force:      {}{}{}", thresh, range_str, phys_str);
             }
-            if cfg.features.has_haptic_intensity {
+            if cfg.desc.features.has_haptic_intensity {
                 let range_str = cfg
+                    .desc
                     .haptic_intensity_range
                     .as_ref()
                     .map(|r| format!(" (range {}..{})", r.logical_min, r.logical_max))
                     .unwrap_or_default();
                 println!(
                     "  Haptic Intensity: {}{}",
-                    cfg.haptic_intensity
+                    cfg.state
+                        .haptic_intensity
                         .map_or("n/a".to_string(), |v| v.to_string()),
                     range_str
                 );
@@ -389,9 +394,9 @@ pub fn main() {
             check_set_value(
                 "haptic intensity",
                 value,
-                cfg.features.has_haptic_intensity,
-                cfg.features.haptic_intensity_writable,
-                cfg.haptic_intensity_range.as_ref(),
+                cfg.desc.features.has_haptic_intensity,
+                cfg.desc.features.haptic_intensity_writable,
+                cfg.desc.haptic_intensity_range.as_ref(),
             );
             if !matches!(value, 0 | 25 | 50 | 75 | 100) {
                 log::error!(
@@ -400,7 +405,7 @@ pub fn main() {
                 );
                 std::process::exit(1);
             }
-            if let Err(e) = cfg.set_haptic_intensity(value) {
+            if let Err(e) = pollster::block_on(cfg.backend.write_haptic_intensity(value)) {
                 log::error!("config: failed to set haptic intensity: {}", e);
                 std::process::exit(1);
             }
@@ -411,11 +416,11 @@ pub fn main() {
             check_set_value(
                 "click force",
                 value,
-                cfg.features.has_button_press_threshold,
-                cfg.features.button_press_threshold_writable,
-                cfg.button_press_threshold_range.as_ref(),
+                cfg.desc.features.has_button_press_threshold,
+                cfg.desc.features.button_press_threshold_writable,
+                cfg.desc.button_press_threshold_range.as_ref(),
             );
-            if let Err(e) = cfg.set_button_press_threshold(value) {
+            if let Err(e) = pollster::block_on(cfg.backend.write_button_press_threshold(value)) {
                 log::error!("config: failed to set click force: {}", e);
                 std::process::exit(1);
             }
@@ -428,7 +433,8 @@ pub fn main() {
     // Resolve axis extents for recording: prefer evdev, fall back to PTP logical extents
     let record_extents = evdev_extents.or_else(|| {
         ptp_config.as_ref().and_then(|cfg| {
-            cfg.physical_size
+            cfg.desc
+                .physical_size
                 .as_ref()
                 .map(|phys| (phys.x.logical_max, phys.y.logical_max))
         })
@@ -570,6 +576,7 @@ pub fn main() {
         initial_width += 220.0;
     }
     let initial_height = if heatmap_rx.is_some() { 650.0 } else { 432.0 };
+    let config_handle = ptp_config.map(Ptp::into_handle);
     let title = if is_recording {
         "Tapview - Touchpad Visualizer (Recording)"
     } else {
@@ -593,7 +600,7 @@ pub fn main() {
                 grab_tx,
                 libinput_rx,
                 heatmap_rx,
-                ptp_config,
+                config_handle,
                 evdev_extents,
                 trails,
                 recorder,
@@ -602,6 +609,32 @@ pub fn main() {
         }),
     )
     .expect("Failed to run eframe");
+}
+
+/// A discovered PTP configuration device, initialised on the main thread so
+/// that `--info`, `--set-*` and the first UI frame all see the probed state.
+struct Ptp {
+    desc: ConfigDescription,
+    state: ConfigState,
+    backend: PlatformConfigBackend,
+}
+
+impl Ptp {
+    fn initialize(d: config::Discovered) -> Ptp {
+        let mut desc = d.description;
+        let mut backend = d.backend;
+        let state = pollster::block_on(config::initialize(&mut backend, &mut desc));
+        Ptp {
+            desc,
+            state,
+            backend,
+        }
+    }
+
+    /// Move the backend onto its worker thread for the UI.
+    fn into_handle(self) -> config::ConfigHandle {
+        config::ConfigHandle::spawn_thread(self.desc, self.state, self.backend)
+    }
 }
 
 /// Route `log` output to stderr as plain lines, the way the old `eprintln!`
