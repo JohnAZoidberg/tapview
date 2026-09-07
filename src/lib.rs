@@ -13,7 +13,7 @@ pub mod android;
 #[cfg(target_os = "android")]
 pub mod android_hid;
 pub mod app;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub mod cli;
 pub mod config;
 pub mod dimensions;
@@ -29,6 +29,13 @@ pub mod ptp;
 pub mod recording;
 pub mod render;
 pub mod session;
+/// The browser front end: WebHID connect flow, session assembly, eframe entry.
+#[cfg(target_arch = "wasm32")]
+pub mod web;
+/// The browser transport: HID reports over WebHID, because a page has no
+/// device nodes and can never block.
+#[cfg(target_arch = "wasm32")]
+pub mod web_hid;
 #[cfg(target_os = "windows")]
 pub mod windows_input_backend;
 

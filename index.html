@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- Trunk's build manifest for the browser build of tapview (see
+     plans/web.md): `trunk serve` for development, `trunk build --release`
+     for the static files GitHub Pages serves. The data-trunk link below is
+     what selects the binary. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tapview — Touchpad Visualizer</title>
+    <!-- data-wasm-opt-params: rustc emits bulk-memory and nontrapping
+         float-to-int ops by default these days, and wasm-opt refuses them
+         unless told the features are allowed. -->
+    <link
+      data-trunk
+      rel="rust"
+      data-bin="tapview"
+      data-wasm-opt="2"
+      data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int"
+    />
+    <style>
+      html {
+        height: 100%;
+      }
+      body {
+        height: 100%;
+        margin: 0;
+        background: #ffffff;
+        font-family: sans-serif;
+        color: #808080;
+      }
+      /* eframe sizes itself from the canvas, so the canvas is the page. */
+      canvas {
+        display: block;
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+      .tapview-loading {
+        position: absolute;
+        top: 40%;
+        width: 100%;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- The loading text sits behind the canvas and shows until eframe's
+         first frame paints over it (or forever, without JS/WebGL). -->
+    <div class="tapview-loading">
+      Loading Tapview…
+      <noscript><br />This page is a WebAssembly app and needs JavaScript.</noscript>
+    </div>
+    <canvas id="tapview_canvas"></canvas>
+  </body>
+</html>

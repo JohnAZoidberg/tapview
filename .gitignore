@@ -8,3 +8,6 @@ result
 /android/app/src/main/jniLibs
 /android/local.properties
 /android/.kotlin
+
+# Trunk's browser-build output (`trunk build` / `trunk serve`).
+/dist

@@ -1,0 +1,11 @@
+# Trunk builds the browser flavor of tapview (see plans/web.md):
+#
+#   trunk serve             # develop against http://localhost:8080
+#   trunk build --release   # the static site, into dist/
+#
+# localhost counts as a secure context, so WebHID works under `trunk serve`;
+# anywhere else the page must be served over HTTPS. Which binary gets built is
+# declared in index.html's <link data-trunk rel="rust"> tag.
+
+[build]
+target = "index.html"
