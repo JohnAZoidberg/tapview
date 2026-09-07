@@ -1,5 +1,6 @@
 use super::{InputBackend, InputError, TouchState};
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc;
 use windows::core::PCWSTR;
@@ -25,11 +26,11 @@ pub struct WindowsBackend {
 
 impl InputBackend for WindowsBackend {
     fn open(device_path: &Path) -> Result<Self, InputError> {
-        let _ = device_path; // device_path is used for discovery; RawInput receives from all touchpads
         let (tx, rx) = mpsc::channel();
+        let wanted = normalize_device_path(&device_path.to_string_lossy());
 
         let thread = std::thread::spawn(move || {
-            if let Err(e) = run_rawinput_loop(tx) {
+            if let Err(e) = run_rawinput_loop(tx, wanted) {
                 eprintln!("RawInput thread error: {}", e);
             }
         });
@@ -60,7 +61,10 @@ impl InputBackend for WindowsBackend {
     }
 }
 
-fn run_rawinput_loop(tx: mpsc::Sender<TouchState>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_rawinput_loop(
+    tx: mpsc::Sender<TouchState>,
+    wanted_device: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let hinstance = GetModuleHandleW(PCWSTR::null())?;
 
@@ -91,6 +95,11 @@ fn run_rawinput_loop(tx: mpsc::Sender<TouchState>) -> Result<(), Box<dyn std::er
             None,
         )?;
 
+        // RawInput registration is by HID usage, not by device, so every
+        // attached touchpad's reports arrive at this window. Remember which one
+        // the user picked so the rest get dropped.
+        WANTED_DEVICE.with(|w| *w.borrow_mut() = Some(wanted_device));
+
         // Register for raw touchpad input
         let rid = RAWINPUTDEVICE {
             usUsagePage: HID_USAGE_PAGE_DIGITIZER,
@@ -118,7 +127,14 @@ fn run_rawinput_loop(tx: mpsc::Sender<TouchState>) -> Result<(), Box<dyn std::er
 
 thread_local! {
     static TX: std::cell::Cell<Option<mpsc::Sender<TouchState>>> = const { std::cell::Cell::new(None) };
-    static PREPARSED_CACHE: std::cell::RefCell<Option<PreparsedCache>> = const { std::cell::RefCell::new(None) };
+    /// Normalized interface path of the touchpad the user selected.
+    static WANTED_DEVICE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// Per-device-handle verdict from `WANTED_DEVICE`, to keep the string
+    /// comparison off the per-report path.
+    static DEVICE_MATCH: std::cell::RefCell<HashMap<usize, bool>> = std::cell::RefCell::new(HashMap::new());
+    /// HID descriptors are per device: parsing one touchpad's reports with
+    /// another's caps yields garbage coordinates.
+    static PREPARSED_CACHE: std::cell::RefCell<HashMap<usize, PreparsedCache>> = std::cell::RefCell::new(HashMap::new());
 }
 
 struct PreparsedCache {
@@ -178,13 +194,18 @@ unsafe fn handle_raw_input(hrawinput: HRAWINPUT) {
         return;
     }
 
-    // Get or create preparsed data cache for this device
+    // Reports from the other attached touchpads are not ours to show.
     let device_handle = raw.header.hDevice;
+    if !is_selected_device(device_handle) {
+        return;
+    }
+
+    // Get or create preparsed data cache for this device
     ensure_preparsed_cache(device_handle);
 
     PREPARSED_CACHE.with(|cache| {
         let cache = cache.borrow();
-        let cache = match cache.as_ref() {
+        let cache = match cache.get(&(device_handle.0 as usize)) {
             Some(c) => c,
             None => return,
         };
@@ -209,9 +230,70 @@ unsafe fn handle_raw_input(hrawinput: HRAWINPUT) {
     });
 }
 
+/// Whether raw input from this device handle came from the touchpad the user
+/// selected. Resolved once per handle from the interface path, which is the
+/// only thing tying a RawInput device back to what `--list` showed.
+unsafe fn is_selected_device(device_handle: HANDLE) -> bool {
+    let key = device_handle.0 as usize;
+    if let Some(known) = DEVICE_MATCH.with(|m| m.borrow().get(&key).copied()) {
+        return known;
+    }
+
+    let wanted = WANTED_DEVICE.with(|w| w.borrow().clone());
+    let name = raw_input_device_name(device_handle);
+    let matches = match (&wanted, &name) {
+        (Some(wanted), Some(name)) => normalize_device_path(name) == *wanted,
+        // Nothing to compare against: behave as before and accept the reports
+        // rather than showing nothing at all.
+        (None, _) => true,
+        (Some(_), None) => true,
+    };
+
+    if !matches {
+        eprintln!(
+            "input: ignoring reports from another touchpad ({})",
+            name.as_deref().unwrap_or("unknown device")
+        );
+    }
+
+    DEVICE_MATCH.with(|m| m.borrow_mut().insert(key, matches));
+    matches
+}
+
+/// The `\\?\HID#...` interface path RawInput knows a device handle by.
+unsafe fn raw_input_device_name(device_handle: HANDLE) -> Option<String> {
+    // Size first; for RIDI_DEVICENAME the size is in characters.
+    let mut len = 0u32;
+    if GetRawInputDeviceInfoW(Some(device_handle), RIDI_DEVICENAME, None, &mut len) != 0 {
+        return None;
+    }
+
+    let mut buf = vec![0u16; len as usize];
+    let read = GetRawInputDeviceInfoW(
+        Some(device_handle),
+        RIDI_DEVICENAME,
+        Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
+        &mut len,
+    );
+    if read == u32::MAX {
+        return None;
+    }
+
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..end]))
+}
+
+/// Normalize a HID interface path for comparison: SetupAPI and RawInput report
+/// the same device with different casing (`\\?\hid#...` vs `\\?\HID#...`).
+fn normalize_device_path(path: &str) -> String {
+    path.strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+}
+
 unsafe fn ensure_preparsed_cache(device_handle: HANDLE) {
     PREPARSED_CACHE.with(|cache| {
-        if cache.borrow().is_some() {
+        if cache.borrow().contains_key(&(device_handle.0 as usize)) {
             return;
         }
 
@@ -278,13 +360,16 @@ unsafe fn ensure_preparsed_cache(device_handle: HANDLE) {
             .map(|vc| vc.LogicalMax as u32)
             .unwrap_or(5);
 
-        *cache.borrow_mut() = Some(PreparsedCache {
-            data: preparsed_buf,
-            caps,
-            value_caps,
-            button_caps,
-            max_contacts,
-        });
+        cache.borrow_mut().insert(
+            device_handle.0 as usize,
+            PreparsedCache {
+                data: preparsed_buf,
+                caps,
+                value_caps,
+                button_caps,
+                max_contacts,
+            },
+        );
     });
 }
 
@@ -502,5 +587,67 @@ unsafe fn check_buttons(
                 buttons.left = true;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::{windows_discovery::WindowsDiscovery, DeviceDiscovery};
+
+    #[test]
+    fn normalize_device_path_ignores_prefix_and_case() {
+        assert_eq!(
+            normalize_device_path(r"\\?\HID#PIXA3854&Col02#4&10d8260e&0&0001"),
+            normalize_device_path(r"hid#pixa3854&col02#4&10d8260e&0&0001")
+        );
+    }
+
+    /// The devnode `--list` shows and hands to `open` must be the same string
+    /// RawInput reports for that device, or `is_selected_device` would drop
+    /// every report and no touches would show up at all.
+    ///
+    /// Needs real hardware; skipped when no touchpad is attached (CI).
+    #[test]
+    fn discovered_touchpads_are_known_to_rawinput() {
+        let Ok(devices) = WindowsDiscovery::find_touchpads() else {
+            eprintln!("no touchpad attached, skipping");
+            return;
+        };
+
+        let known: Vec<String> = unsafe { rawinput_device_names() }
+            .iter()
+            .map(|n| normalize_device_path(n))
+            .collect();
+
+        for d in &devices {
+            let wanted = normalize_device_path(&d.devnode.to_string_lossy());
+            assert!(
+                known.contains(&wanted),
+                "{} is not in the RawInput device list:\n{}",
+                wanted,
+                known.join("\n")
+            );
+        }
+    }
+
+    unsafe fn rawinput_device_names() -> Vec<String> {
+        let entry_size = std::mem::size_of::<RAWINPUTDEVICELIST>() as u32;
+        let mut count = 0u32;
+        if GetRawInputDeviceList(None, &mut count, entry_size) == u32::MAX || count == 0 {
+            return Vec::new();
+        }
+
+        let mut list = vec![RAWINPUTDEVICELIST::default(); count as usize];
+        let written = GetRawInputDeviceList(Some(list.as_mut_ptr()), &mut count, entry_size);
+        if written == u32::MAX {
+            return Vec::new();
+        }
+        list.truncate(written as usize);
+
+        list.iter()
+            .filter(|e| e.dwType == RIM_TYPEHID)
+            .filter_map(|e| raw_input_device_name(e.hDevice))
+            .collect()
     }
 }
