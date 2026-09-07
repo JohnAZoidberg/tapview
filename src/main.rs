@@ -84,7 +84,7 @@ struct Cli {
     #[arg(long, value_name = "LEVEL")]
     set_click_force: Option<u8>,
 
-    /// Use a specific device path instead of auto-detection
+    /// Use a specific device instead of auto-detection (full path or name from --list, e.g. event8)
     #[arg(long)]
     device: Option<String>,
 
@@ -173,18 +173,20 @@ fn main() {
     };
 
     if cli.list {
-        for (i, d) in devices.iter().enumerate() {
-            println!("{}: {}", i, d);
-        }
+        print!("{}", discovery::format_device_table(&devices));
         std::process::exit(0);
     }
 
-    let device = if let Some(ref path) = cli.device {
-        let path = std::path::PathBuf::from(path);
-        match devices.iter().find(|d| d.devnode == path) {
+    let device = if let Some(ref wanted) = cli.device {
+        // Accept either the full devnode path (/dev/input/event8) or just
+        // the basename (event8) as printed by --list.
+        let path = std::path::Path::new(wanted);
+        match devices.iter().find(|d| {
+            d.devnode == path || d.devnode.file_name() == Some(path.as_os_str())
+        }) {
             Some(d) => d.clone(),
             None => {
-                eprintln!("Device {} not found among detected touchpads. Use --list to see available devices.", path.display());
+                eprintln!("Device {} not found among detected touchpads. Use --list to see available devices.", wanted);
                 std::process::exit(1);
             }
         }

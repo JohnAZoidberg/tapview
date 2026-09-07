@@ -1,4 +1,4 @@
-use super::{DeviceDiscovery, DeviceInfo, DiscoveryError, Integration};
+use super::{Bus, DeviceDiscovery, DeviceInfo, DiscoveryError, Integration};
 use std::path::PathBuf;
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::*;
@@ -131,18 +131,37 @@ unsafe fn get_touchpad_info(
         let _ = HidD_FreePreparsedData(preparsed_data);
     }
 
-    let (vendor_id, product_id) = if is_touchpad {
+    let (vendor_id, product_id, name) = if is_touchpad {
         let mut attrs = HIDD_ATTRIBUTES {
             Size: std::mem::size_of::<HIDD_ATTRIBUTES>() as u32,
             ..Default::default()
         };
-        if HidD_GetAttributes(handle, &mut attrs) {
+        let (vid, pid) = if HidD_GetAttributes(handle, &mut attrs) {
             (Some(attrs.VendorID), Some(attrs.ProductID))
         } else {
             (None, None)
-        }
+        };
+
+        // HidD_GetProductString buffer must not exceed 4093 bytes.
+        let mut buf = [0u16; 128];
+        let name = if HidD_GetProductString(
+            handle,
+            buf.as_mut_ptr() as *mut _,
+            (buf.len() * std::mem::size_of::<u16>()) as u32,
+        ) {
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            let s = String::from_utf16_lossy(&buf[..len]).trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        } else {
+            None
+        };
+        (vid, pid, name)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     let _ = CloseHandle(handle);
@@ -150,12 +169,36 @@ unsafe fn get_touchpad_info(
     if is_touchpad {
         Some(DeviceInfo {
             devnode: PathBuf::from(&device_path),
+            name,
+            bus: bus_from_device_path(&device_path),
             integration: Integration::Unknown,
             vendor_id,
             product_id,
         })
     } else {
         None
+    }
+}
+
+/// Guess the transport from the HID interface path.
+///
+/// Bluetooth HID devices carry the HID (0x1124) or HID-over-GATT (0x1812)
+/// service UUID in their hardware ID, e.g.
+/// `\\?\hid#{00001812-0000-1000-8000-00805f9b34fb}_dev_vid&...`.
+/// USB HID devices use `hid#vid_xxxx&pid_xxxx`. I2C-HID devices use an
+/// ACPI-derived ID without a VID (e.g. `hid#syna7813&col01`).
+fn bus_from_device_path(path: &str) -> Bus {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("00001124-0000-1000-8000-00805f9b34fb")
+        || lower.contains("00001812-0000-1000-8000-00805f9b34fb")
+        || lower.contains("bthenum")
+        || lower.contains("bthledevice")
+    {
+        Bus::Bluetooth
+    } else if lower.contains("hid#vid_") {
+        Bus::Usb
+    } else {
+        Bus::Unknown
     }
 }
 

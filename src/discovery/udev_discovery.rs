@@ -1,4 +1,4 @@
-use super::{DeviceDiscovery, DeviceInfo, DiscoveryError, Integration};
+use super::{Bus, DeviceDiscovery, DeviceInfo, DiscoveryError, Integration};
 use std::path::PathBuf;
 
 fn read_input_ids(device: &udev::Device) -> (Option<u16>, Option<u16>) {
@@ -26,6 +26,30 @@ fn read_input_ids(device: &udev::Device) -> (Option<u16>, Option<u16>) {
         .attribute_value("id/product")
         .and_then(|v| u16::from_str_radix(v.to_str()?, 16).ok());
     (vid, pid)
+}
+
+/// Read the kernel device name and bus type from the parent inputX sysfs node.
+fn read_name_and_bus(device: &udev::Device) -> (Option<String>, Bus) {
+    let parent = match device.parent() {
+        Some(p) => p,
+        None => return (None, Bus::Unknown),
+    };
+    // hid-multitouch appends the application usage (" Touchpad") to the HID
+    // device name to distinguish it from the other collections of the same
+    // device (" Mouse", " Keyboard", ...). Every device we list is a touchpad,
+    // so the suffix is redundant here.
+    let name = parent
+        .attribute_value("name")
+        .and_then(|v| v.to_str())
+        .map(|s| s.trim())
+        .map(|s| s.strip_suffix(" Touchpad").unwrap_or(s).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let bus = parent
+        .attribute_value("id/bustype")
+        .and_then(|v| u16::from_str_radix(v.to_str()?, 16).ok())
+        .map(Bus::from_linux_bustype)
+        .unwrap_or(Bus::Unknown);
+    (name, bus)
 }
 
 pub struct UdevDiscovery;
@@ -74,9 +98,12 @@ impl DeviceDiscovery for UdevDiscovery {
                 // I2C-HID devices don't, but the parent inputX device has the IDs
                 // in its sysfs id/vendor and id/product attributes.
                 let (vendor_id, product_id) = read_input_ids(&device);
+                let (name, bus) = read_name_and_bus(&device);
 
                 results.push(DeviceInfo {
                     devnode: PathBuf::from(devnode),
+                    name,
+                    bus,
                     integration,
                     vendor_id,
                     product_id,
