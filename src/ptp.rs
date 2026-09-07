@@ -29,9 +29,11 @@ const DIGITIZER: u16 = 0x0D;
 
 const USAGE_X: u16 = 0x30;
 const USAGE_Y: u16 = 0x31;
+const USAGE_TOUCH_SCREEN: u16 = 0x04;
 const USAGE_TOUCH_PAD: u16 = 0x05;
 const USAGE_FINGER: u16 = 0x22;
 const USAGE_TIP_PRESSURE: u16 = 0x30;
+const USAGE_IN_RANGE: u16 = 0x32;
 const USAGE_TIP_SWITCH: u16 = 0x42;
 const USAGE_CONFIDENCE: u16 = 0x47;
 const USAGE_WIDTH: u16 = 0x48;
@@ -189,6 +191,82 @@ impl PtpLayout {
             .unwrap_or(0);
 
         Some(ptp)
+    }
+}
+
+/// Finger-level usages: one of these repeating inside a report means the
+/// next finger's fields have begun.
+fn is_finger_usage(usage_page: u16, usage: u16) -> bool {
+    matches!(
+        (usage_page, usage),
+        (DIGITIZER, USAGE_TIP_SWITCH)
+            | (DIGITIZER, USAGE_CONFIDENCE)
+            | (DIGITIZER, USAGE_CONTACT_ID)
+            | (DIGITIZER, USAGE_TIP_PRESSURE)
+            | (DIGITIZER, USAGE_IN_RANGE)
+            | (DIGITIZER, USAGE_WIDTH)
+            | (DIGITIZER, USAGE_HEIGHT)
+            | (GENERIC_DESKTOP, USAGE_X)
+            | (GENERIC_DESKTOP, USAGE_Y)
+    )
+}
+
+/// Put back the per-finger Logical collections a layout has lost.
+///
+/// A browser's parsed `HIDDevice.collections` lists every report item on its
+/// top-level collection, in descriptor order, with no trace of the nested
+/// Finger collections — yet [`PtpLayout::from_layout`] tells fingers apart by
+/// exactly those. So: walking each Input report's finger-level fields (tip
+/// switch, contact id, X, Y, ...) that are not already inside a Finger
+/// collection, a new synthetic Finger collection begins whenever a usage
+/// repeats. Padding and report-level fields (contact count, scan time,
+/// buttons) are left where they are. A layout parsed from raw descriptor
+/// bytes has its Finger collections and comes back unchanged.
+pub fn synthesize_finger_collections(layout: &mut ReportLayout) {
+    /// The synthetic Finger collection being filled.
+    struct Group {
+        owner: usize,
+        report_id: u8,
+        collection: usize,
+        seen: Vec<(u16, u16)>,
+    }
+    let mut current: Option<Group> = None;
+    for i in 0..layout.fields.len() {
+        let f = layout.fields[i].clone();
+        if f.kind != ReportKind::Input || !is_finger_usage(f.usage_page, f.usage) {
+            continue;
+        }
+        let Some(owner) = f.collection else {
+            continue;
+        };
+        // Only digitizer reports: a mouse collection has X/Y too.
+        let touch = layout.is_inside(&f, DIGITIZER, USAGE_TOUCH_PAD)
+            || layout.is_inside(&f, DIGITIZER, USAGE_TOUCH_SCREEN);
+        if !touch || layout.is_inside(&f, DIGITIZER, USAGE_FINGER) {
+            continue;
+        }
+        let key = (f.usage_page, f.usage);
+        let start_new = match &current {
+            Some(g) => g.owner != owner || g.report_id != f.report_id || g.seen.contains(&key),
+            None => true,
+        };
+        if start_new {
+            layout.collections.push(Collection {
+                parent: Some(owner),
+                kind: 2, // Logical, as PTP descriptors declare them
+                usage_page: DIGITIZER,
+                usage: USAGE_FINGER,
+            });
+            current = Some(Group {
+                owner,
+                report_id: f.report_id,
+                collection: layout.collections.len() - 1,
+                seen: Vec::new(),
+            });
+        }
+        let group = current.as_mut().expect("just set");
+        group.seen.push(key);
+        layout.fields[i].collection = Some(group.collection);
     }
 }
 
@@ -396,6 +474,81 @@ mod tests {
 
     fn framework_layout() -> PtpLayout {
         PtpLayout::from_layout(&ReportLayout::parse(FRAMEWORK13)).unwrap()
+    }
+
+    /// What a browser hands over: the same fields, in order, but every one
+    /// attached to its top-level collection — the Finger collections gone.
+    fn flattened(layout: &ReportLayout) -> ReportLayout {
+        // Keep only top-level collections, renumbered densely.
+        let mut new_index = vec![None; layout.collections.len()];
+        let mut collections = Vec::new();
+        for (i, c) in layout.collections.iter().enumerate() {
+            if c.parent.is_none() {
+                new_index[i] = Some(collections.len());
+                collections.push(c.clone());
+            }
+        }
+        let top_level = |mut idx: usize| {
+            while let Some(parent) = layout.collections[idx].parent {
+                idx = parent;
+            }
+            new_index[idx].unwrap()
+        };
+        let fields = layout
+            .fields
+            .iter()
+            .cloned()
+            .map(|mut f| {
+                f.collection = f.collection.map(top_level);
+                f
+            })
+            .collect();
+        ReportLayout::from_parts(fields, collections)
+    }
+
+    #[test]
+    fn synthesized_finger_collections_match_the_descriptor() {
+        let original = ReportLayout::parse(FRAMEWORK13);
+        let expected = PtpLayout::from_layout(&original).unwrap();
+
+        let mut flat = flattened(&original);
+        assert!(
+            PtpLayout::from_layout(&flat).is_none(),
+            "the flattened layout must have lost its fingers"
+        );
+        synthesize_finger_collections(&mut flat);
+        let rebuilt = PtpLayout::from_layout(&flat).unwrap();
+
+        assert_eq!(rebuilt.report_id, expected.report_id);
+        assert_eq!(rebuilt.report_bytes, expected.report_bytes);
+        assert_eq!(rebuilt.fingers.len(), expected.fingers.len());
+        assert_eq!(
+            (rebuilt.x_max, rebuilt.y_max),
+            (expected.x_max, expected.y_max)
+        );
+        assert_eq!(rebuilt.contact_count_max, expected.contact_count_max);
+        let pos = |f: &Option<ReportField>| f.as_ref().map(|f| (f.bit_offset, f.bit_size));
+        for (r, e) in rebuilt.fingers.iter().zip(&expected.fingers) {
+            assert_eq!(pos(&r.tip_switch), pos(&e.tip_switch));
+            assert_eq!(pos(&r.confidence), pos(&e.confidence));
+            assert_eq!(pos(&r.contact_id), pos(&e.contact_id));
+            assert_eq!(pos(&r.x), pos(&e.x));
+            assert_eq!(pos(&r.y), pos(&e.y));
+            assert_eq!(pos(&r.width), pos(&e.width));
+            assert_eq!(pos(&r.height), pos(&e.height));
+        }
+        assert_eq!(pos(&rebuilt.contact_count), pos(&expected.contact_count));
+        assert_eq!(pos(&rebuilt.scan_time), pos(&expected.scan_time));
+        assert_eq!(rebuilt.buttons.len(), expected.buttons.len());
+
+        // Idempotent, and a no-op on a layout that still has its collections.
+        let before = flat.fields.clone();
+        synthesize_finger_collections(&mut flat);
+        assert_eq!(flat.fields, before);
+        let mut intact = original.clone();
+        synthesize_finger_collections(&mut intact);
+        assert_eq!(intact.fields, original.fields);
+        assert_eq!(intact.collections, original.collections);
     }
 
     /// Set a field in a report payload (report-ID byte at index 0 excluded);
