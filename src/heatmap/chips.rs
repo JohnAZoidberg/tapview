@@ -93,7 +93,7 @@ pub async fn read_frame<D: HidDevice>(
 
     // Convert LE bytes to i16
     Ok(raw
-        .chunks_exact(2)
+        .as_chunks::<2>().0.iter()
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
         .collect())
 }
