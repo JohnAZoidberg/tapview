@@ -308,6 +308,28 @@ impl ReportLayout {
             c.kind == Collection::APPLICATION && c.usage_page == usage_page && c.usage == usage
         })
     }
+
+    /// Take a top-level collection whose type came back as 0 to be an
+    /// Application collection.
+    ///
+    /// Parsing raw descriptor bytes always yields the real type, so this is
+    /// for layouts built from a platform's own parse instead: Chromium fills
+    /// `HIDDevice.collections` from the OS, and Windows' preparsed data
+    /// carries no collection type, so every collection arrives as 0. Read at
+    /// face value that is Physical, which makes
+    /// [`Self::has_application_collection`] — and with it every touchpad
+    /// test — fail on Windows. A top-level collection is an Application
+    /// collection by definition, so at the root a 0 means "not reported".
+    ///
+    /// Nested collections keep whatever type they were given: only the root
+    /// carries that guarantee.
+    pub fn assume_top_level_applications(&mut self) {
+        for c in &mut self.collections {
+            if c.parent.is_none() && c.kind == 0 {
+                c.kind = Collection::APPLICATION;
+            }
+        }
+    }
 }
 
 /// A Usage/Usage Minimum/Usage Maximum item: 4-byte data carries the usage
@@ -558,6 +580,77 @@ mod tests {
         assert!(!layout.has_application_collection(DIGITIZER, 0x05));
         assert_eq!(layout.collections[0].kind, Collection::APPLICATION);
         assert!(layout.is_inside(im, DIGITIZER, 0x0E));
+    }
+
+    /// Chromium on Windows reports every collection's type as 0, the
+    /// preparsed data having none to give: the collections below are what a
+    /// Framework 16 pad arrives as there. Without the fixup nothing takes it
+    /// for a touchpad, which is how it went missing from the browser's
+    /// prompt.
+    #[test]
+    fn untyped_top_level_collections_are_applications() {
+        const VENDOR: u16 = 0xFF00;
+        let mut layout = ReportLayout::from_parts(
+            Vec::new(),
+            vec![
+                Collection {
+                    parent: None,
+                    kind: 0,
+                    usage_page: GENERIC_DESKTOP,
+                    usage: 0x02, // Mouse
+                },
+                Collection {
+                    parent: None,
+                    kind: 0,
+                    usage_page: DIGITIZER,
+                    usage: 0x0E, // Configuration
+                },
+                Collection {
+                    parent: None,
+                    kind: 0,
+                    usage_page: VENDOR,
+                    usage: 0x01,
+                },
+                // Nested, and genuinely Physical: left alone.
+                Collection {
+                    parent: Some(1),
+                    kind: 0,
+                    usage_page: DIGITIZER,
+                    usage: 0x22, // Finger
+                },
+            ],
+        );
+
+        assert!(!layout.has_application_collection(DIGITIZER, 0x0E));
+        layout.assume_top_level_applications();
+        assert!(layout.has_application_collection(DIGITIZER, 0x0E));
+        assert!(layout.has_application_collection(VENDOR, 0x01));
+        assert_eq!(layout.collections[3].kind, 0);
+    }
+
+    /// A type the source did report survives, whatever it is.
+    #[test]
+    fn reported_top_level_types_are_left_alone() {
+        let mut layout = ReportLayout::from_parts(
+            Vec::new(),
+            vec![
+                Collection {
+                    parent: None,
+                    kind: Collection::APPLICATION,
+                    usage_page: DIGITIZER,
+                    usage: 0x05,
+                },
+                Collection {
+                    parent: None,
+                    kind: 2, // Logical
+                    usage_page: DIGITIZER,
+                    usage: 0x0E,
+                },
+            ],
+        );
+        layout.assume_top_level_applications();
+        assert_eq!(layout.collections[0].kind, Collection::APPLICATION);
+        assert_eq!(layout.collections[1].kind, 2);
     }
 
     #[test]

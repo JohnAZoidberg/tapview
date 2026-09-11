@@ -227,21 +227,9 @@ struct LayoutBuilder {
 impl LayoutBuilder {
     fn walk(&mut self, collection: &JsValue, parent: Option<usize>) {
         let idx = self.collections.len();
-        // Chromium takes the collection type from the platform's parsed
-        // descriptor, and Windows' preparsed data carries none: every
-        // collection arrives as 0 (Physical) there, where Linux reports the
-        // real types. A root entry of `HIDDevice.collections` is a top-level
-        // collection, which HID declares as an Application collection, so
-        // read a 0 at the root as "not reported" rather than as Physical —
-        // otherwise nothing that looks for an application collection (the
-        // touchpad test here, `PtpLayout::from_layout`) matches on Windows.
-        let mut kind = num(collection, "type") as u8;
-        if parent.is_none() && kind == 0 {
-            kind = Collection::APPLICATION;
-        }
         self.collections.push(Collection {
             parent,
-            kind,
+            kind: num(collection, "type") as u8,
             usage_page: num(collection, "usagePage") as u16,
             usage: num(collection, "usage") as u16,
         });
@@ -320,6 +308,9 @@ pub fn layout_from_collections(collections: &js_sys::Array) -> ReportLayout {
         b.walk(&c, None);
     }
     let mut layout = ReportLayout::from_parts(b.fields, b.collections);
+    // Chromium takes collection types from the platform and Windows supplies
+    // none, so the root arrives untyped; see the method's doc.
+    layout.assume_top_level_applications();
     synthesize_finger_collections(&mut layout);
     layout
 }
