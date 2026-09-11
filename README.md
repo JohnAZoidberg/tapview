@@ -262,12 +262,18 @@ Browser differences, all inherent to the platform:
   pick it in the browser's prompt. The grant persists across visits (the page
   re-takes it on load and opens the pad when it is the only one granted).
   **Disconnect** in the bar above a live view returns to the list, where
-  another granted pad can be opened or a new one connected. Windows may
-  refuse to open the touchpad collection at all; Linux is the tested
-  platform.
+  another granted pad can be opened or a new one connected.
 - **Touches come from the raw PTP reports**, parsed like on Android, so the
   system cursor keeps working and palms show up as the firmware flags them.
   Heatmap and PTP configuration work as on the desktop.
+- **Windows is heatmap-only.** The Precision Touchpad driver keeps the pad's
+  Touch Pad collection, so the browser is given no input reports at all and
+  no touches can be drawn — running tapview natively is the only way to see
+  them there. The vendor and configuration collections do come through, so
+  the page opens the pad with the heatmap filling the window, plus the
+  config panel minus the fields (physical size among them) that live in the
+  collection Windows withholds. Linux has no such split and is the tested
+  platform.
 - **No grab, no libinput.** A page cannot take exclusive hold of the pad. The
   right-hand panel shows what the browser makes of it instead: pointer
   motion, scrolling, and pinch (delivered as ctrl+wheel), only while the

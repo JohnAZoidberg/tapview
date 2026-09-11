@@ -75,12 +75,29 @@ console.log(await dev.receiveFeatureReport(0x42));
 Run on a Framework 13 or 16 under Linux Chrome, and once on a Windows box.
 Questions it answers, ordered by risk:
 
-1. **Windows: can Chrome open the digitizer collection?** Windows may hold
-   PTP collections exclusively (tapview's own Windows backend uses RawInput,
-   not `ReadFile`, which hints at this). Chrome opens every collection of the
-   physical device when `open()` is called; if one fails the whole open may
-   fail, which would make Windows heatmap-only or nothing. Only a test
-   answers this. Linux is the primary target either way.
+1. **Windows: can Chrome open the digitizer collection?** — **ANSWERED
+   (2026-09-11, Framework 16, Chrome on Windows 11): heatmap and config yes,
+   touches no.** `open()` succeeds. Chromium merges the pad's collections
+   into one device, "HIDI2C Device":
+
+   | Collection | Reports visible to the page |
+   |---|---|
+   | `01:02` Mouse | none — protected, reports stripped |
+   | `0d:0e` Configuration | feature `0x03` (Input Mode), `0x05` (Selective Reporting) |
+   | `ff00:01` vendor | feature `0x41`–`0x45` |
+
+   `0d:05` Touch Pad is absent entirely — the Precision Touchpad driver
+   holds that collection — and **no collection exposes a single input
+   report**, so the `inputreport` path is dead on Windows rather than merely
+   starved. RawInput stays the only way to touches there.
+
+   Feature reports work both directions on the collections that do appear:
+   `receiveFeatureReport(0x41)` returns the burst buffer, the `0x42`/`0x43`
+   register round trip reads back real values (register `0x78` → `0x43`),
+   and the config reports read Input Mode = 3, Selective Reporting = 3.
+
+   Missing along with `0d:05`: axis extents and physical size, which
+   `touchpad_physical_size` and the touch view both want.
 2. **Do PTP input reports arrive** while hid-multitouch owns the device?
    Expected yes on Linux (hidraw is a tee), and the cursor keeps moving.
 3. **Do the vendor feature reports 0x41–0x43 and the config report pass**
@@ -319,7 +336,14 @@ closed, and `Session::name` drawn in the view's corner on every front end.
   (`rfd::AsyncFileDialog`, which aster already uses on wasm).
 - URL query parameters standing in for the CLI flags (`?trails=5`,
   `?no_heatmap`), parsed into the same settings struct.
-- Windows-in-browser support depending on the phase 0 answer.
+- **Windows in the browser: heatmap + config, no touches** (phase 0 Q1).
+  Three things needed. A chooser filter that also accepts `ff00:01` /
+  `0d:0e` — today's `usagePage: 0x0D, usage: 0x05` filter matches nothing on
+  Windows, which is why the prompt comes up empty there and the pad looks
+  invisible. A session that can start without a `PtpLayout`, where
+  `open_session` hard-fails on `PtpLayout::from_layout` today. And a view
+  sized from the heatmap's rows and columns, since extents came from the
+  collection Windows withholds.
 - WebHID on ChromeOS, if anyone asks.
 
 ## Rejected alternatives
