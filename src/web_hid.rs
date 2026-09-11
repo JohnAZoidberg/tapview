@@ -47,6 +47,12 @@ use crate::session::Session;
 
 const DIGITIZER: u16 = 0x0D;
 const USAGE_TOUCH_PAD: u16 = 0x05;
+/// The PTP device's Configuration collection. A touchpad is recognized by
+/// this where the Touch Pad collection is not on offer: Chromium on Windows
+/// withholds the latter (the Precision Touchpad driver holds it) but passes
+/// this one and the vendor collection through, which is enough for the
+/// heatmap and the config panel.
+const USAGE_CONFIGURATION: u16 = 0x0E;
 
 #[wasm_bindgen]
 extern "C" {
@@ -342,9 +348,10 @@ pub async fn connect(request_new: bool) -> Result<Vec<Granted>, String> {
     let hid = hid()?;
 
     if request_new {
-        // Only devices with a Touch Pad collection appear in the prompt.
+        // Only touchpads appear in the prompt: a Touch Pad collection, or —
+        // where the browser withholds it — the PTP Configuration collection.
         let options = js_sys::JSON::parse(&format!(
-            r#"{{"filters":[{{"usagePage":{DIGITIZER},"usage":{USAGE_TOUCH_PAD}}}]}}"#
+            r#"{{"filters":[{{"usagePage":{DIGITIZER},"usage":{USAGE_TOUCH_PAD}}},{{"usagePage":{DIGITIZER},"usage":{USAGE_CONFIGURATION}}}]}}"#
         ))
         .expect("static filter JSON parses");
         JsFuture::from(hid.request_device(&options))
@@ -361,7 +368,9 @@ pub async fn connect(request_new: bool) -> Result<Vec<Granted>, String> {
     for device in devices.iter() {
         let device: JsHidDevice = device.unchecked_into();
         let layout = layout_from_collections(&device.collections());
-        if !layout.has_application_collection(DIGITIZER, USAGE_TOUCH_PAD) {
+        if !layout.has_application_collection(DIGITIZER, USAGE_TOUCH_PAD)
+            && !layout.has_application_collection(DIGITIZER, USAGE_CONFIGURATION)
+        {
             continue;
         }
         granted.push(Granted {
@@ -467,7 +476,8 @@ impl HidDevice for WebHidDevice {
 struct SessionGuard {
     device: JsHidDevice,
     hid: Hid,
-    _input: Closure<dyn FnMut(JsValue)>,
+    /// `None` on a heatmap-only session, which hooks no input reports.
+    _input: Option<Closure<dyn FnMut(JsValue)>>,
     disconnect: Closure<dyn FnMut(JsValue)>,
 }
 
@@ -486,8 +496,11 @@ pub async fn open_session(granted: &Granted) -> Result<Session, String> {
     let hid = hid()?;
     let device = granted.device.clone();
     let layout = &granted.layout;
-    let ptp = PtpLayout::from_layout(layout)
-        .ok_or_else(|| "no Touch Pad collection in report descriptor".to_string())?;
+    // No Touch Pad collection means no touches. That is not fatal: Chromium on
+    // Windows withholds it while passing the vendor and configuration
+    // collections through, which still makes a heatmap-only session. Whether
+    // anything at all is on offer is decided once those are built, below.
+    let ptp = PtpLayout::from_layout(layout);
 
     // `opened` is per page, so `true` here means an earlier session of ours
     // whose fire-and-forget close() has not settled yet: finish that first,
@@ -501,42 +514,53 @@ pub async fn open_session(granted: &Granted) -> Result<Session, String> {
             js_error("opening the device", &e)
         )
     })?;
-    log::info!(
-        "webhid: opened {} (touch report {}, {} finger slots, up to {} contacts)",
-        granted.label(),
-        ptp.report_id,
-        ptp.fingers.len(),
-        ptp.contact_count_max
-    );
-
-    let extents = Some((ptp.x_max, ptp.y_max));
-    let touch_report_id = ptp.report_id;
+    let extents = ptp.as_ref().map(|ptp| (ptp.x_max, ptp.y_max));
 
     // Touches: every input report of the touch report ID through the parser.
     // The parser expects hidraw framing (report ID first for numbered reports);
     // WebHID hands the ID separately.
-    let (touch_tx, touch_rx) = mpsc::channel::<TouchState>();
-    let parser = Rc::new(RefCell::new(PtpParser::new(ptp)));
-    let input = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
-        let report_id = num(&event, "reportId") as u8;
-        if report_id != touch_report_id {
-            return;
+    let (touch_rx, input) = match ptp {
+        Some(ptp) => {
+            log::info!(
+                "webhid: opened {} (touch report {}, {} finger slots, up to {} contacts)",
+                granted.label(),
+                ptp.report_id,
+                ptp.fingers.len(),
+                ptp.contact_count_max
+            );
+            let touch_report_id = ptp.report_id;
+            let (touch_tx, touch_rx) = mpsc::channel::<TouchState>();
+            let parser = Rc::new(RefCell::new(PtpParser::new(ptp)));
+            let input = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
+                let report_id = num(&event, "reportId") as u8;
+                if report_id != touch_report_id {
+                    return;
+                }
+                let Some(data) = dataview_bytes(&get(&event, "data")) else {
+                    return;
+                };
+                let mut report = Vec::with_capacity(data.len() + 1);
+                if report_id != 0 {
+                    report.push(report_id);
+                }
+                report.extend_from_slice(&data);
+                if let Some(state) = parser.borrow_mut().feed(&report) {
+                    // A closed channel means the session was dropped; the
+                    // guard's Drop unhooks this handler right after.
+                    let _ = touch_tx.send(state);
+                }
+            });
+            device.set_oninputreport(Some(input.as_ref().unchecked_ref()));
+            (Some(touch_rx), Some(input))
         }
-        let Some(data) = dataview_bytes(&get(&event, "data")) else {
-            return;
-        };
-        let mut report = Vec::with_capacity(data.len() + 1);
-        if report_id != 0 {
-            report.push(report_id);
+        None => {
+            log::info!(
+                "webhid: opened {} with no Touch Pad collection: heatmap-only",
+                granted.label()
+            );
+            (None, None)
         }
-        report.extend_from_slice(&data);
-        if let Some(state) = parser.borrow_mut().feed(&report) {
-            // A closed channel means the session was dropped; the guard's
-            // Drop unhooks this handler right after.
-            let _ = touch_tx.send(state);
-        }
-    });
-    device.set_oninputreport(Some(input.as_ref().unchecked_ref()));
+    };
 
     // Unplug: `navigator.hid` fires `disconnect` with the device.
     let (lost_tx, lost_rx) = mpsc::channel::<String>();
@@ -606,6 +630,22 @@ pub async fn open_session(granted: &Granted) -> Result<Session, String> {
         }
         None => None,
     };
+
+    // Nothing on offer at all. Building the guard and dropping it right away
+    // is the teardown: it unhooks the disconnect listener and closes the
+    // device, so a later attempt can open it again.
+    if touch_rx.is_none() && heatmap_stream.is_none() && config.is_none() {
+        drop(SessionGuard {
+            device,
+            hid,
+            _input: input,
+            disconnect,
+        });
+        return Err(format!(
+            "{} exposes no touches, heatmap or configuration to the browser",
+            granted.label()
+        ));
+    }
 
     Ok(Session {
         name: granted.label(),
