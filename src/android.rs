@@ -83,7 +83,7 @@ impl Opened {
     pub fn into_session(self) -> Session {
         Session {
             name: self.name,
-            touch_rx: self.touch_rx,
+            touch_rx: Some(self.touch_rx),
             grab_tx: None,
             heatmap: self.heatmap,
             config: self.config,

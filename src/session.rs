@@ -22,8 +22,15 @@ pub struct Session {
     /// What the device is, for the corner of the view: product name plus
     /// whatever tells it apart from its siblings (bus, VID:PID, node).
     pub name: String,
-    /// Touch frames from the input backend.
-    pub touch_rx: mpsc::Receiver<TouchState>,
+    /// Touch frames from the input backend, where the transport has them.
+    ///
+    /// `None` is a heatmap-only session: the device is open and its feature
+    /// reports answer, but no touch stream exists. The browser on Windows is
+    /// the case this is for — the Precision Touchpad driver keeps the Touch
+    /// Pad collection, so WebHID sees the vendor and configuration
+    /// collections and not one input report. The visualizer then hides the
+    /// touchpad view and gives the heatmap the whole window.
+    pub touch_rx: Option<mpsc::Receiver<TouchState>>,
     /// `Some` where the backend can grab the device (Linux evdev); `None`
     /// where it cannot (Windows RawInput, raw HID transports), which also
     /// hides the grab UI.
@@ -47,4 +54,13 @@ pub struct Session {
     /// Thread-based backends need none of this — they notice the closed
     /// channels — and leave it `None`.
     pub guard: Option<Box<dyn std::any::Any>>,
+}
+
+impl Session {
+    /// Whether this session carries touches. `false` means heatmap-only, and
+    /// the touchpad view, trails, button indicators and report rate all have
+    /// nothing to show.
+    pub fn has_touches(&self) -> bool {
+        self.touch_rx.is_some()
+    }
 }

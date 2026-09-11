@@ -206,6 +206,12 @@ impl eframe::App for TapviewApp {
         }
 
         let is_playback = self.playback.is_some();
+        // A live session with no touch stream: the heatmap is the whole app.
+        let heatmap_only = !is_playback
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.has_touches());
 
         if let Some(pb) = &mut self.playback {
             // --- Playback: advance time, look up frame ---
@@ -247,16 +253,19 @@ impl eframe::App for TapviewApp {
             );
         } else if let Some(session) = &mut self.session {
             // --- Live mode: drain touch events ---
-            while let Ok(state) = session.touch_rx.try_recv() {
-                self.current_touches = state.touches;
-                self.buttons = state.buttons;
-                self.rate.push(&state);
+            // A heatmap-only session has no channel here and nothing to drain.
+            if let Some(touch_rx) = &session.touch_rx {
+                while let Ok(state) = touch_rx.try_recv() {
+                    self.current_touches = state.touches;
+                    self.buttons = state.buttons;
+                    self.rate.push(&state);
 
-                // Record each frame
-                if let Some(recorder) = &mut session.recorder {
-                    if let Err(e) = recorder.record(&state) {
-                        log::error!("Recording error: {}", e);
-                        session.recorder = None;
+                    // Record each frame
+                    if let Some(recorder) = &mut session.recorder {
+                        if let Err(e) = recorder.record(&state) {
+                            log::error!("Recording error: {}", e);
+                            session.recorder = None;
+                        }
                     }
                 }
             }
@@ -342,7 +351,13 @@ impl eframe::App for TapviewApp {
 
         // Show heatmap bottom panel once the hardware has produced a frame;
         // switched off, it shrinks to the header with the checkbox
-        let heatmap = self.session.as_ref().and_then(|s| s.heatmap.as_ref());
+        // Heatmap-only sessions draw it in the central panel further down
+        // instead, where it has the window to itself.
+        let heatmap = if heatmap_only {
+            None
+        } else {
+            self.session.as_ref().and_then(|s| s.heatmap.as_ref())
+        };
         if let (Some(frame), Some(heatmap)) = (&self.heatmap_frame, heatmap) {
             let mut enabled = heatmap.enabled();
             // The header-only panel gets its own id: egui remembers a
@@ -415,6 +430,51 @@ impl eframe::App for TapviewApp {
                 Some(SessionRequest::Playback(rec)) => self.start_playback(*rec),
                 None => {}
             }
+            ctx.request_repaint();
+            return;
+        }
+
+        // A session without touches: there is no touchpad view to draw, so
+        // the sensor matrix takes the central panel rather than a strip at
+        // the bottom. Everything below this point is about touches.
+        if heatmap_only {
+            let stream = self.session.as_ref().and_then(|s| s.heatmap.as_ref());
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::WHITE))
+                .show(ctx, |ui| {
+                    if let Some(session) = &self.session {
+                        ui.label(
+                            egui::RichText::new(&session.name)
+                                .size(12.0)
+                                .color(egui::Color32::GRAY),
+                        );
+                    }
+                    match (&self.heatmap_frame, stream) {
+                        (Some(frame), Some(stream)) => {
+                            let mut enabled = stream.enabled();
+                            render::draw_heatmap_panel(ui, frame, &mut enabled);
+                            if enabled != stream.enabled() {
+                                stream.set_enabled(enabled);
+                            }
+                        }
+                        // Before the first frame, and on a device whose
+                        // heatmap never started.
+                        _ => {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(ui.available_height() * 0.3);
+                                ui.label(
+                                    egui::RichText::new(if stream.is_some() {
+                                        "Reading the sensor matrix..."
+                                    } else {
+                                        "This device offers no touches and no heatmap"
+                                    })
+                                    .size(20.0)
+                                    .color(egui::Color32::GRAY),
+                                );
+                            });
+                        }
+                    }
+                });
             ctx.request_repaint();
             return;
         }

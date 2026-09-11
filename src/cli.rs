@@ -546,7 +546,7 @@ pub fn main() {
     let config_handle = ptp_config.map(Ptp::into_handle);
     let session = Session {
         name: device.label(),
-        touch_rx,
+        touch_rx: Some(touch_rx),
         grab_tx: can_grab.then_some(grab_tx),
         heatmap,
         config: config_handle,
