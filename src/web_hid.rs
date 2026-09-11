@@ -364,13 +364,34 @@ pub async fn connect(request_new: bool) -> Result<Vec<Granted>, String> {
         .map_err(|e| js_error("listing granted HID devices", &e))?;
     let devices: js_sys::Array = devices.unchecked_into();
 
+    log::info!("webhid: {} granted device(s)", devices.length());
+
     let mut granted = Vec::new();
     for device in devices.iter() {
         let device: JsHidDevice = device.unchecked_into();
         let layout = layout_from_collections(&device.collections());
-        if !layout.has_application_collection(DIGITIZER, USAGE_TOUCH_PAD)
-            && !layout.has_application_collection(DIGITIZER, USAGE_CONFIGURATION)
-        {
+        let accepted = layout.has_application_collection(DIGITIZER, USAGE_TOUCH_PAD)
+            || layout.has_application_collection(DIGITIZER, USAGE_CONFIGURATION);
+        // What the browser handed over and what was made of it. Granted
+        // devices are never enumerated, so without this there is no way to
+        // see why a pad was passed over — the top-level collections are
+        // exactly what that decision is made on.
+        log::info!(
+            "webhid: {} {:04x}:{:04x} [{}] feature reports {:02x?} -> {}",
+            device.product_name(),
+            device.vendor_id(),
+            device.product_id(),
+            layout
+                .collections
+                .iter()
+                .filter(|c| c.parent.is_none())
+                .map(|c| format!("{:04x}:{:04x} type {}", c.usage_page, c.usage, c.kind))
+                .collect::<Vec<_>>()
+                .join(", "),
+            layout.report_ids(ReportKind::Feature),
+            if accepted { "touchpad" } else { "skipped" }
+        );
+        if !accepted {
             continue;
         }
         granted.push(Granted {
