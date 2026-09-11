@@ -53,7 +53,11 @@
       "Read(//proc/bus/input/**)",
       "Bash(stty -F /dev/ttyACM2 115200 raw)",
       "Read(//sys/power/suspend_stats/**)",
-      "Bash(journalctl -b --no-pager -q -g \"suspend entry\" -o short)"
+      "Bash(journalctl -b --no-pager -q -g \"suspend entry\" -o short)",
+      "PowerShell(git log *)",
+      "WebFetch(domain:github.com)",
+      "PowerShell(cargo clippy *)",
+      "PowerShell(git status *)"
     ]
   }
 }
