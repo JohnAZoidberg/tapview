@@ -12,6 +12,7 @@ It runs natively on Linux (the primary platform) and Windows, as an [Android app
 | Framework Laptop 13 | Linux                | Working    | Working           | Working | Working    |
 | Framework Laptop 16 | Linux                | Working    | Working           | Working | Working    |
 | Framework Laptop    | Linux, Chrome        | Working    | Browser events    | Working | Working    |
+| Framework Laptop 16 | Windows, Chrome      | Not exposed| Browser events    | Working | Partial    |
 | Touchpad KB (daisy) | Android (Fairphone 6)| Working    | n/a               | Working | Working    |
 
 Touchpads attached over Bluetooth work on Linux and Windows through the normal HID stack. The heatmap is noticeably slower there (a few frames per second instead of around ten) because every frame is a series of feature-report round trips over the link.

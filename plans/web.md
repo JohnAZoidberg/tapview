@@ -98,6 +98,17 @@ Questions it answers, ordered by risk:
 
    Missing along with `0d:05`: axis extents and physical size, which
    `touchpad_physical_size` and the touch view both want.
+
+   **Shipped**, same day, and confirmed on that machine: a Framework 16 pad
+   reports `PJP343 detected, 17x28 matrix, burst_len=261` in Chrome on
+   Windows, with the config panel alongside it. It took a heatmap-only
+   `Session` (`touch_rx: Option<_>`, the sensor matrix in the central panel),
+   a chooser filter that takes `0d:0e` as well as `0d:05`, and one Chromium
+   quirk: **Windows reports every collection's type as 0**, because the
+   preparsed data carries none, so `has_application_collection` and
+   `PtpLayout::from_layout` both missed. `layout_from_collections` now reads
+   a 0 at the root of `HIDDevice.collections` as Application — a top-level
+   collection is one by definition.
 2. **Do PTP input reports arrive** while hid-multitouch owns the device?
    Expected yes on Linux (hidraw is a tee), and the cursor keeps moving.
 3. **Do the vendor feature reports 0x41–0x43 and the config report pass**
@@ -336,14 +347,6 @@ closed, and `Session::name` drawn in the view's corner on every front end.
   (`rfd::AsyncFileDialog`, which aster already uses on wasm).
 - URL query parameters standing in for the CLI flags (`?trails=5`,
   `?no_heatmap`), parsed into the same settings struct.
-- **Windows in the browser: heatmap + config, no touches** (phase 0 Q1).
-  Three things needed. A chooser filter that also accepts `ff00:01` /
-  `0d:0e` — today's `usagePage: 0x0D, usage: 0x05` filter matches nothing on
-  Windows, which is why the prompt comes up empty there and the pad looks
-  invisible. A session that can start without a `PtpLayout`, where
-  `open_session` hard-fails on `PtpLayout::from_layout` today. And a view
-  sized from the heatmap's rows and columns, since extents came from the
-  collection Windows withholds.
 - WebHID on ChromeOS, if anyone asks.
 
 ## Rejected alternatives
