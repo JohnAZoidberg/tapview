@@ -31,6 +31,16 @@ pub async fn read_user_reg<D: HidDevice>(dev: &D, bank: u8, addr: u8) -> io::Res
     Ok(buf[3])
 }
 
+/// Write a user register via Report 0x43.
+pub async fn write_user_reg<D: HidDevice>(
+    dev: &D,
+    bank: u8,
+    addr: u8,
+    value: u8,
+) -> io::Result<()> {
+    dev.set_feature(&[REPORT_USER, addr, bank, value]).await
+}
+
 /// Burst read via repeated GetFeature(Report 0x41).
 /// `report_len` is the payload bytes per report (excluding report ID byte).
 pub async fn burst_read<D: HidDevice>(

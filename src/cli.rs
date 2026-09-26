@@ -116,6 +116,13 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["play", "rates"])]
     watch_rates: bool,
 
+    /// Write a PixArt user register (bank 0 unless given; hex or decimal,
+    /// e.g. 0x12=120 or 1:0x05=0x10) and exit, or go on to --rates /
+    /// --watch-rates. Repeatable. RAM only: the firmware's value is back
+    /// once the pad resets or loses power
+    #[arg(long, value_name = "[BANK:]REG=VALUE", value_parser = parse_user_reg_write, conflicts_with = "play")]
+    write_user_reg: Vec<UserRegWrite>,
+
     /// Play back a recorded touch session (no device needed)
     #[arg(long, conflicts_with_all = ["record", "device", "libinput", "heatmap", "config"])]
     play: Option<String>,
@@ -213,9 +220,10 @@ pub fn main() {
         std::process::exit(0);
     }
 
-    if cli.rates || cli.watch_rates {
-        if let Err(e) = print_rates(&device, cli.watch_rates) {
-            log::error!("rates: {}", e);
+    if cli.rates || cli.watch_rates || !cli.write_user_reg.is_empty() {
+        let show = cli.rates || cli.watch_rates;
+        if let Err(e) = pixart_registers(&device, &cli.write_user_reg, show, cli.watch_rates) {
+            log::error!("pixart: {}", e);
             std::process::exit(1);
         }
         std::process::exit(0);
@@ -686,20 +694,88 @@ fn pixart_hid_path(device: &discovery::DeviceInfo) -> std::io::Result<std::path:
     heatmap::discovery::find_hid_device_for_heatmap(&device.devnode).map(|(path, _)| path)
 }
 
-/// `--rates` / `--watch-rates`: the run/rest-mode registers of a PixArt pad.
-/// Reads only. Every read is a SetFeature + GetFeature pair, so don't run it
-/// alongside another tapview that polls the heatmap of the same pad.
-fn print_rates(device: &discovery::DeviceInfo, watch: bool) -> Result<(), String> {
+/// One `--write-user-reg [BANK:]REG=VALUE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UserRegWrite {
+    bank: u8,
+    reg: u8,
+    value: u8,
+}
+
+fn parse_user_reg_write(s: &str) -> Result<UserRegWrite, String> {
+    fn byte(what: &str, s: &str) -> Result<u8, String> {
+        let s = s.trim();
+        let parsed = match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            Some(hex) => u8::from_str_radix(hex, 16),
+            None => s.parse(),
+        };
+        parsed.map_err(|_| format!("{} {:?} is not a byte (0-255 or 0x00-0xff)", what, s))
+    }
+    let (target, value) = s
+        .split_once('=')
+        .ok_or_else(|| format!("{:?} is not [BANK:]REG=VALUE", s))?;
+    let (bank, reg) = match target.split_once(':') {
+        Some((bank, reg)) => (byte("bank", bank)?, byte("register", reg)?),
+        None => (0, byte("register", target)?),
+    };
+    Ok(UserRegWrite {
+        bank,
+        reg,
+        value: byte("value", value)?,
+    })
+}
+
+/// `--write-user-reg`, `--rates` and `--watch-rates` on a PixArt pad: apply
+/// the writes, then show the run/rest-mode registers if `show`, then follow
+/// them if `watch`. Every register access is a SetFeature + GetFeature pair,
+/// so don't run this alongside another tapview that polls the heatmap of the
+/// same pad.
+fn pixart_registers(
+    device: &discovery::DeviceInfo,
+    writes: &[UserRegWrite],
+    show: bool,
+    watch: bool,
+) -> Result<(), String> {
+    use heatmap::protocol::{read_user_reg, write_user_reg};
     use heatmap::rates;
 
     let path =
         pixart_hid_path(device).map_err(|e| format!("no PixArt vendor HID interface: {}", e))?;
     let dev = heatmap::open_platform_hid_device(&path)
         .map_err(|e| format!("{}: {}", path.display(), e))?;
+    // Also the check that this is a PixArt pad at all before writing to it.
     let chip = pollster::block_on(heatmap::chips::identify_chip(&dev))
         .map_err(|e| format!("identifying the chip: {}", e))?;
-    let regs = pollster::block_on(rates::read_rates(&dev, chip)).map_err(|e| e.to_string())?;
 
+    for w in writes {
+        let old = pollster::block_on(read_user_reg(&dev, w.bank, w.reg));
+        pollster::block_on(write_user_reg(&dev, w.bank, w.reg, w.value))
+            .map_err(|e| format!("writing bank {} 0x{:02x}: {}", w.bank, w.reg, e))?;
+        let now = pollster::block_on(read_user_reg(&dev, w.bank, w.reg))
+            .map_err(|e| format!("reading back bank {} 0x{:02x}: {}", w.bank, w.reg, e))?;
+        let old = old.map_or("?".to_string(), |v| v.to_string());
+        println!(
+            "{} user bank {} 0x{:02x}: {} -> {}",
+            chip, w.bank, w.reg, old, now
+        );
+        if now != w.value {
+            log::warn!(
+                "pixart: bank {} 0x{:02x} reads back {}, not the {} written (read-only, or the firmware changed it)",
+                w.bank,
+                w.reg,
+                now,
+                w.value
+            );
+        }
+    }
+    if !show {
+        return Ok(());
+    }
+    if !writes.is_empty() {
+        println!();
+    }
+
+    let regs = pollster::block_on(rates::read_rates(&dev, chip)).map_err(|e| e.to_string())?;
     println!(
         "{} run/rest registers (user bank 0, {})",
         chip,
@@ -879,5 +955,31 @@ fn spawn_heatmap(
             }
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w(bank: u8, reg: u8, value: u8) -> UserRegWrite {
+        UserRegWrite { bank, reg, value }
+    }
+
+    #[test]
+    fn user_reg_write_defaults_to_bank_0_and_takes_hex_or_decimal() {
+        assert_eq!(parse_user_reg_write("0x12=120"), Ok(w(0, 0x12, 120)));
+        assert_eq!(parse_user_reg_write("18=0x78"), Ok(w(0, 18, 0x78)));
+        assert_eq!(parse_user_reg_write("1:0X05=0xFF"), Ok(w(1, 5, 0xff)));
+        assert_eq!(parse_user_reg_write(" 0:0x1d = 10 "), Ok(w(0, 0x1d, 10)));
+    }
+
+    #[test]
+    fn user_reg_write_rejects_malformed_and_out_of_range() {
+        assert!(parse_user_reg_write("0x12").is_err());
+        assert!(parse_user_reg_write("0x12=256").is_err());
+        assert!(parse_user_reg_write("0x100=1").is_err());
+        assert!(parse_user_reg_write("x:0x12=1").is_err());
+        assert!(parse_user_reg_write("0x12=").is_err());
     }
 }
