@@ -4,6 +4,7 @@ pub mod discovery;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
 pub mod protocol;
+pub mod rates;
 #[cfg(target_os = "windows")]
 pub mod windows_hid;
 

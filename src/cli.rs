@@ -106,6 +106,16 @@ struct Cli {
     #[arg(long, value_name = "N", conflicts_with = "play")]
     dump_hidraw: Option<usize>,
 
+    /// Print the PixArt pad's run/rest-mode registers (report rate, idle
+    /// frame rates and delays, current mode) and exit
+    #[arg(long, conflicts_with = "play")]
+    rates: bool,
+
+    /// Like --rates, then print a line whenever the pad's run/rest mode,
+    /// observed report rate or 0x12/0x13 change, until interrupted
+    #[arg(long, conflicts_with_all = ["play", "rates"])]
+    watch_rates: bool,
+
     /// Play back a recorded touch session (no device needed)
     #[arg(long, conflicts_with_all = ["record", "device", "libinput", "heatmap", "config"])]
     play: Option<String>,
@@ -198,6 +208,14 @@ pub fn main() {
     if let Some(n) = cli.dump_hidraw {
         if let Err(e) = dump_hidraw(&device, n) {
             log::error!("dump-hidraw: {}", e);
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
+    if cli.rates || cli.watch_rates {
+        if let Err(e) = print_rates(&device, cli.watch_rates) {
+            log::error!("rates: {}", e);
             std::process::exit(1);
         }
         std::process::exit(0);
@@ -651,6 +669,72 @@ fn dump_hidraw(device: &discovery::DeviceInfo, count: usize) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+/// How often `--watch-rates` polls the mode and observed report rate.
+const WATCH_RATES_PERIOD: Duration = Duration::from_millis(100);
+
+/// The pad's PixArt vendor HID interface: the sibling hidraw node on Linux,
+/// the heatmap-capable HID interface on Windows.
+#[cfg(target_os = "linux")]
+fn pixart_hid_path(device: &discovery::DeviceInfo) -> std::io::Result<std::path::PathBuf> {
+    heatmap::discovery::find_sibling_hidraw(&device.devnode)
+}
+
+#[cfg(target_os = "windows")]
+fn pixart_hid_path(device: &discovery::DeviceInfo) -> std::io::Result<std::path::PathBuf> {
+    heatmap::discovery::find_hid_device_for_heatmap(&device.devnode).map(|(path, _)| path)
+}
+
+/// `--rates` / `--watch-rates`: the run/rest-mode registers of a PixArt pad.
+/// Reads only. Every read is a SetFeature + GetFeature pair, so don't run it
+/// alongside another tapview that polls the heatmap of the same pad.
+fn print_rates(device: &discovery::DeviceInfo, watch: bool) -> Result<(), String> {
+    use heatmap::rates;
+
+    let path =
+        pixart_hid_path(device).map_err(|e| format!("no PixArt vendor HID interface: {}", e))?;
+    let dev = heatmap::open_platform_hid_device(&path)
+        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    let chip = pollster::block_on(heatmap::chips::identify_chip(&dev))
+        .map_err(|e| format!("identifying the chip: {}", e))?;
+    let regs = pollster::block_on(rates::read_rates(&dev, chip)).map_err(|e| e.to_string())?;
+
+    println!(
+        "{} run/rest registers (user bank 0, {})",
+        chip,
+        path.display()
+    );
+    for r in &regs {
+        println!("  0x{:02x} {:<22} {}", r.addr, r.name, r.value);
+    }
+    if !watch {
+        return Ok(());
+    }
+
+    println!();
+    println!("Watching for changes, Ctrl-C to stop");
+    println!(
+        "  {:>8}    {:<5}  {:>8}  {:>4}  {:>4}",
+        "time", "mode", "observed", "0x12", "0x13"
+    );
+    let start = std::time::Instant::now();
+    let mut last = None;
+    loop {
+        let status = pollster::block_on(rates::read_status(&dev)).map_err(|e| e.to_string())?;
+        if last != Some(status) {
+            println!(
+                "  {:8.2} s  {:<5}  {:>5} Hz  {:>4}  {:>4}",
+                start.elapsed().as_secs_f32(),
+                rates::op_mode_label(status.op_mode),
+                status.obs_report_rate,
+                status.report_rate_reg[0],
+                status.report_rate_reg[1]
+            );
+            last = Some(status);
+        }
+        thread::sleep(WATCH_RATES_PERIOD);
+    }
 }
 
 /// A discovered PTP configuration device, initialised on the main thread so

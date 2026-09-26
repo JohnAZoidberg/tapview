@@ -48,6 +48,8 @@ While a finger is on the pad, the top-right corner shows something like `Report 
 
 The two agree on a pad whose every scan reaches the host. `pad` above `host` means scans are being skipped, coalesced or dropped between the pad and the host: a pad that scans at 140 Hz but only ships a report every 10 ms reads `pad 140 Hz · host 100 Hz`. Only `host` is shown when the device puts no timestamp in its reports (or on Windows, where it is not read yet). In playback, the figure is the rate around the current position of the recording.
 
+On a PixArt pad, `--rates` shows what the firmware is set to: the report rate, the frame rates and delays of the two idle modes (REST1 and REST2) the pad drops into without touch, and the mode it is in. `--watch-rates` then prints a line whenever the mode, the pad's observed report rate or the report-rate register pair changes, so you can watch it step down from run to rest1 to rest2 and back up on the next touch. Both only read. The register names come from PixArt's own register tables, and the PJP343 lays out 0x14 and 0x18-0x1b differently from the PJP274 family. Both tables call 0x12/0x13 a 16-bit rate, but on a PJP343 0x12 is the live scan rate (140 in run, 20 in rest2) and 0x13 stays at 140, so 0x12 is shown as the rate and 0x13 raw.
+
 ## Dependencies
 
 ### Build dependencies
@@ -147,6 +149,8 @@ sudo ./target/release/tapview [OPTIONS]
 | `--play <path>` | Play back a recorded touch session (no device needed) |
 | `--hidraw` | Linux: read touches from the hidraw node through tapview's own PTP report parser instead of evdev (same `hidraw` access as the heatmap; no grab). For checking the parser against the kernel |
 | `--dump-hidraw <N>` | Linux: print the HID report descriptor and N raw input reports as hex, then exit |
+| `--rates` | PixArt pads: print the run/rest-mode registers (report rate, idle frame rates and delays, current mode) and exit |
+| `--watch-rates` | Like `--rates`, then print a line whenever the mode, observed report rate or 0x12/0x13 change, until Ctrl-C. Don't run it next to another tapview polling the same pad's heatmap: each register read is a SetFeature/GetFeature pair |
 | `-h, --help` | Show help |
 
 ### Controls
@@ -318,6 +322,7 @@ src/
     chips.rs, protocol.rs    PixArt chip detection, register and burst-read protocol
     discovery.rs             Finding the heatmap-capable HID interface
     backend.rs               Polling loop and its pause/stop switches
+    rates.rs                 Run/rest-mode rate registers, per-chip layout (--rates)
     hidraw.rs, windows_hid.rs  Native HidDevice implementations
   config/
     mod.rs                   PTP configuration model, UI handle and worker protocol
