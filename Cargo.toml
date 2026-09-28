@@ -70,6 +70,13 @@ udev = "0.9"
 input = "0.9"
 libc = "0.2"
 
+# macOS: IOHIDManager through hidapi. It hands out the raw report
+# descriptor, so the pad goes through the same descriptor-driven code as
+# Android and the browser. `macos-shared-device` is what lets a pad be opened
+# without seizing it, so the system cursor keeps working.
+[target.'cfg(target_os = "macos")'.dependencies]
+hidapi = { version = "2", default-features = false, features = ["macos-shared-device"] }
+
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 version = "0.62"
 features = [

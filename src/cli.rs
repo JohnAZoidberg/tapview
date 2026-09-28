@@ -11,11 +11,14 @@ use crate::config::{ConfigBackend, ConfigDescription, ConfigState, PlatformConfi
 use crate::discovery::udev_discovery::UdevDiscovery;
 #[cfg(target_os = "windows")]
 use crate::discovery::windows_discovery::WindowsDiscovery;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::discovery::DeviceDiscovery;
 #[cfg(target_os = "linux")]
 use crate::input::evdev_backend::EvdevBackend;
 #[cfg(target_os = "linux")]
 use crate::input::hidraw_backend::HidrawBackend;
+#[cfg(target_os = "macos")]
+use crate::input::macos_backend::MacBackend;
 #[cfg(target_os = "windows")]
 use crate::input::windows_backend::WindowsBackend;
 use crate::input::InputBackend;
@@ -207,7 +210,7 @@ pub fn main() {
     let pixart = cli.rates || cli.watch_rates || !cli.write_user_reg.is_empty() || power.any();
     #[cfg(target_os = "linux")]
     let dump = cli.dump_hidraw.is_some();
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let dump = false;
     // The paths that print and exit have no window to pick a device in.
     let one_shot = cli.info
@@ -220,7 +223,8 @@ pub fn main() {
         config: Feature::from_flags(cli.config, cli.no_config),
         heatmap: Feature::from_flags(cli.heatmap, cli.no_heatmap),
         heatmap_cols: cli.heatmap_cols,
-        libinput: !cli.no_libinput,
+        // No interpreted-input source on macOS yet.
+        libinput: !cli.no_libinput && cfg!(not(target_os = "macos")),
         #[cfg(target_os = "linux")]
         hidraw: cli.hidraw,
         record: cli.record.clone(),
@@ -250,7 +254,7 @@ pub fn main() {
         let libinput_rx = opts
             .libinput
             .then(windows_input_backend::spawn_windows_input_thread);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let libinput_rx = None;
         run_window(
             trails,
@@ -495,7 +499,10 @@ pub fn main() {
             std::process::exit(1);
         }
     };
+    #[cfg(not(target_os = "macos"))]
     let libinput_rx = opts.libinput.then(|| spawn_libinput(&device));
+    #[cfg(target_os = "macos")]
+    let libinput_rx = None;
     run_window(
         trails,
         title,
@@ -513,6 +520,11 @@ fn find_touchpads() -> Result<Vec<discovery::DeviceInfo>, discovery::DiscoveryEr
 #[cfg(target_os = "windows")]
 fn find_touchpads() -> Result<Vec<discovery::DeviceInfo>, discovery::DiscoveryError> {
     WindowsDiscovery::find_touchpads()
+}
+
+#[cfg(target_os = "macos")]
+fn find_touchpads() -> Result<Vec<discovery::DeviceInfo>, discovery::DiscoveryError> {
+    crate::hid::macos::find_touchpads()
 }
 
 /// Whether a panel's backend runs: `--no-*` turns it off, `--*` makes a
@@ -566,7 +578,7 @@ fn probe(device: &discovery::DeviceInfo, config: Feature) -> Result<Probe, Strin
     // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
     #[cfg(target_os = "linux")]
     let evdev_extents = crate::input::evdev_backend::read_axis_extents(&device.devnode);
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let evdev_extents = None;
 
     // Discover PTP configuration features (auto-detected by default, forced with --config)
@@ -580,11 +592,11 @@ fn probe(device: &discovery::DeviceInfo, config: Feature) -> Result<Probe, Strin
         cfg
     };
 
-    // The touchpad's axes as its HID descriptor declares them. On Linux the
-    // config backend parsed the descriptor; Windows exposes none, so the
-    // ranges come from the Touch Pad collection's preparsed data, and the
-    // config panel is handed them for its Physical Size line.
-    #[cfg(target_os = "linux")]
+    // The touchpad's axes as its HID descriptor declares them. On Linux and
+    // macOS the config backend parsed the descriptor; Windows exposes none,
+    // so the ranges come from the Touch Pad collection's preparsed data, and
+    // the config panel is handed them for its Physical Size line.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let hid_axes = ptp_config
         .as_ref()
         .and_then(|cfg| cfg.desc.physical_size.clone());
@@ -711,6 +723,22 @@ fn start_session(
             log::info!("axis: HID report extents: x=0..{}, y=0..{}", x_max, y_max);
         }
         (extents, false)
+    };
+
+    #[cfg(target_os = "macos")]
+    let (session_extents, can_grab) = {
+        let backend = MacBackend::open(&device.devnode)
+            .map_err(|e| format!("Failed to open device: {}", e))?;
+        let (x_max, y_max) = backend.extents();
+        log::info!(
+            "hid: touch report {}, {} finger slots, up to {} contacts",
+            backend.layout().report_id,
+            backend.layout().fingers.len(),
+            backend.layout().contact_count_max
+        );
+        log::info!("axis: HID report extents: x=0..{}, y=0..{}", x_max, y_max);
+        thread::spawn(move || run_input_thread(backend, grab_rx, touch_tx));
+        (Some((x_max, y_max)), false)
     };
 
     // The input thread ends when the grab channel closes. A backend that
@@ -890,7 +918,7 @@ fn dump_hidraw(device: &discovery::DeviceInfo, count: usize) -> Result<(), Strin
 const WATCH_RATES_PERIOD: Duration = Duration::from_millis(100);
 
 /// The pad's PixArt vendor HID interface: the sibling hidraw node on Linux,
-/// the heatmap-capable HID interface on Windows.
+/// the heatmap-capable HID interface on Windows, the device itself on macOS.
 #[cfg(target_os = "linux")]
 fn pixart_hid_path(device: &discovery::DeviceInfo) -> std::io::Result<std::path::PathBuf> {
     heatmap::discovery::find_sibling_hidraw(&device.devnode)
@@ -899,6 +927,11 @@ fn pixart_hid_path(device: &discovery::DeviceInfo) -> std::io::Result<std::path:
 #[cfg(target_os = "windows")]
 fn pixart_hid_path(device: &discovery::DeviceInfo) -> std::io::Result<std::path::PathBuf> {
     heatmap::discovery::find_hid_device_for_heatmap(&device.devnode).map(|(path, _)| path)
+}
+
+#[cfg(target_os = "macos")]
+fn pixart_hid_path(device: &discovery::DeviceInfo) -> std::io::Result<std::path::PathBuf> {
+    Ok(device.devnode.clone())
 }
 
 /// One `--write-user-reg [BANK:]REG=VALUE`.
@@ -1213,6 +1246,31 @@ fn spawn_heatmap(
             );
             Ok(Some(heatmap::backend::spawn_heatmap_thread(
                 &hid_path,
+                burst_len,
+                heatmap_cols,
+            )))
+        }
+        Err(e) if force => Err(format!("heatmap: {}", e)),
+        Err(_) => Ok(None),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_heatmap(
+    device: &discovery::DeviceInfo,
+    heatmap_cols: Option<usize>,
+    force: bool,
+) -> Result<Option<heatmap::backend::HeatmapStream>, String> {
+    let burst_len = crate::hid::macos::MacHidDevice::open(&device.devnode)
+        .and_then(|d| d.report_descriptor())
+        .and_then(|desc| {
+            heatmap::discovery::burst_report_length(&crate::hid::ReportLayout::parse(&desc))
+        });
+    match burst_len {
+        Ok(burst_len) => {
+            log::info!("heatmap: burst report length = {}", burst_len);
+            Ok(Some(heatmap::backend::spawn_heatmap_thread(
+                &device.devnode,
                 burst_len,
                 heatmap_cols,
             )))
