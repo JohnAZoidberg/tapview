@@ -230,11 +230,14 @@ Windows builds are cross-compiled from Linux with Nix (see below); there is no W
 
 ## On macOS
 
-The same binary builds natively with `cargo build --release` or `nix build`; it needs no libraries beyond the system frameworks. Tapview lists every HID device with a Digitizer / Touch Pad collection and reads it through IOHIDManager. The pad's raw report descriptor drives the same PTP parser, heatmap loop and configuration backend as on Android and in the browser. The device is opened shared, so the cursor keeps working and grabbing is not available. The interpreted-input panel is not implemented on macOS.
+The same binary builds natively with `cargo build --release` or `nix build`; it needs no libraries beyond the system frameworks. Tapview reads two kinds of pad:
 
-macOS lets a process open a pointing device only with Input Monitoring permission. Add the terminal that starts tapview under System Settings > Privacy & Security > Input Monitoring, then restart the terminal. Without it, opening the device fails with `not permitted`.
+- **PTP touchpads** (USB, Bluetooth): every HID device whose Touch Pad collection carries PTP finger fields, read through IOHIDManager. The pad's raw report descriptor drives the same PTP parser, heatmap loop and configuration backend as on Android and in the browser.
+- **Apple trackpads** (built-in, Magic Trackpad): these are not PTP devices. Their touches come in an undocumented vendor report, so tapview takes finished contacts from Apple's private MultitouchSupport framework instead. There is no heatmap and no PTP configuration for them.
 
-This backend is untested on a PTP touchpad. The built-in Apple trackpad is listed, but whether its descriptor carries PTP finger fields is not yet confirmed.
+Devices are opened shared, so the cursor keeps working and grabbing is not available. The interpreted-input panel is not implemented on macOS.
+
+macOS lets a process open a pointing device only with Input Monitoring permission, and a CLI inherits it from the terminal that starts it. On the first open tapview asks for it, which adds the terminal to System Settings > Privacy & Security > Input Monitoring; enable it there and restart the terminal. If the terminal was denied earlier, macOS does not ask again: reset it with `tccutil reset ListenEvent <bundle id of the terminal>` and run tapview again.
 
 ## On Android
 
@@ -326,14 +329,16 @@ src/
     hidraw_backend.rs        Linux hidraw + PTP parser (--hidraw), for checking the parser
     windows_backend.rs       Windows Raw Input implementation
     macos_backend.rs         macOS IOHIDDevice input reports + PTP parser
+    macos_mt.rs              macOS Apple trackpads through MultitouchSupport
   discovery/
     mod.rs                   DeviceDiscovery trait, device table
     udev_discovery.rs        Linux udev implementation
+    macos_discovery.rs       macOS: MultitouchSupport pads, then HID PTP pads
     windows_discovery.rs     Windows SetupAPI/HID implementation
   hid/
     mod.rs, descriptor.rs    HID report-descriptor model shared by every transport
     linux.rs                 Descriptor from sysfs next to the hidraw node
-    macos.rs                 macOS transport and discovery through IOHIDManager (hidapi)
+    macos.rs                 macOS HID transport and PTP pad listing through IOHIDManager (hidapi)
   heatmap/
     mod.rs                   HidDevice trait (feature-report I/O), frame type
     chips.rs, protocol.rs    PixArt chip detection, register and burst-read protocol
