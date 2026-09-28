@@ -25,21 +25,47 @@ fn hid_err(e: hidapi::HidError) -> io::Error {
     io::Error::other(e.to_string())
 }
 
+// IOKit/hid/IOHIDLib.h, macOS 10.15+. IOKit is linked by hidapi.
+const IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+const IOHID_ACCESS_TYPE_GRANTED: u32 = 0;
+const IOHID_ACCESS_TYPE_UNKNOWN: u32 = 2;
+
+extern "C" {
+    fn IOHIDCheckAccess(request_type: u32) -> u32;
+    fn IOHIDRequestAccess(request_type: u32) -> bool;
+}
+
+/// Input Monitoring, which macOS requires before a pointing device opens.
+///
+/// Without this call a denied open fails with `not permitted` and nothing
+/// shows up in System Settings to approve: only `IOHIDRequestAccess` puts
+/// the responsible app (the terminal, for a CLI) in the list and prompts.
+fn ensure_input_monitoring() -> io::Result<()> {
+    let access = unsafe { IOHIDCheckAccess(IOHID_REQUEST_TYPE_LISTEN_EVENT) };
+    if access == IOHID_ACCESS_TYPE_GRANTED {
+        return Ok(());
+    }
+    if access == IOHID_ACCESS_TYPE_UNKNOWN
+        && unsafe { IOHIDRequestAccess(IOHID_REQUEST_TYPE_LISTEN_EVENT) }
+    {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "Input Monitoring is not granted: enable the terminal that runs tapview in \
+         System Settings > Privacy & Security > Input Monitoring, then restart that terminal",
+    ))
+}
+
 impl MacHidDevice {
     pub fn open(path: &Path) -> io::Result<Self> {
+        ensure_input_monitoring()?;
         let api = hidapi::HidApi::new().map_err(hid_err)?;
         let cpath = CString::new(path.as_os_str().as_bytes())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        let dev = api.open_path(&cpath).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "{}: {} (grant Input Monitoring to the terminal in System Settings > Privacy & Security)",
-                    path.display(),
-                    e
-                ),
-            )
-        })?;
+        let dev = api
+            .open_path(&cpath)
+            .map_err(|e| io::Error::other(format!("{}: {}", path.display(), e)))?;
         Ok(Self { dev })
     }
 
