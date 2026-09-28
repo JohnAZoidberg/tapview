@@ -7,11 +7,12 @@ use std::io::IsTerminal;
 
 use crate::app::TapviewApp;
 use crate::config::{ConfigBackend, ConfigDescription, ConfigState, PlatformConfigBackend};
+#[cfg(target_os = "macos")]
+use crate::discovery::macos_discovery::MacDiscovery;
 #[cfg(target_os = "linux")]
 use crate::discovery::udev_discovery::UdevDiscovery;
 #[cfg(target_os = "windows")]
 use crate::discovery::windows_discovery::WindowsDiscovery;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::discovery::DeviceDiscovery;
 #[cfg(target_os = "linux")]
 use crate::input::evdev_backend::EvdevBackend;
@@ -19,6 +20,8 @@ use crate::input::evdev_backend::EvdevBackend;
 use crate::input::hidraw_backend::HidrawBackend;
 #[cfg(target_os = "macos")]
 use crate::input::macos_backend::MacBackend;
+#[cfg(target_os = "macos")]
+use crate::input::macos_mt::MtBackend;
 #[cfg(target_os = "windows")]
 use crate::input::windows_backend::WindowsBackend;
 use crate::input::InputBackend;
@@ -524,7 +527,7 @@ fn find_touchpads() -> Result<Vec<discovery::DeviceInfo>, discovery::DiscoveryEr
 
 #[cfg(target_os = "macos")]
 fn find_touchpads() -> Result<Vec<discovery::DeviceInfo>, discovery::DiscoveryError> {
-    crate::hid::macos::find_touchpads()
+    MacDiscovery::find_touchpads()
 }
 
 /// Whether a panel's backend runs: `--no-*` turns it off, `--*` makes a
@@ -726,7 +729,18 @@ fn start_session(
     };
 
     #[cfg(target_os = "macos")]
-    let (session_extents, can_grab) = {
+    let (session_extents, can_grab) = if crate::input::macos_mt::is_mt_path(&device.devnode) {
+        let backend = MtBackend::open(&device.devnode)
+            .map_err(|e| format!("Failed to open device: {}", e))?;
+        let (w, h) = backend.extents();
+        log::info!(
+            "multitouch: surface {:.1} x {:.1} mm",
+            w as f64 / 100.0,
+            h as f64 / 100.0
+        );
+        thread::spawn(move || run_input_thread(backend, grab_rx, touch_tx));
+        (Some((w, h)), false)
+    } else {
         let backend = MacBackend::open(&device.devnode)
             .map_err(|e| format!("Failed to open device: {}", e))?;
         let (x_max, y_max) = backend.extents();
@@ -1261,6 +1275,12 @@ fn spawn_heatmap(
     heatmap_cols: Option<usize>,
     force: bool,
 ) -> Result<Option<heatmap::backend::HeatmapStream>, String> {
+    if crate::input::macos_mt::is_mt_path(&device.devnode) {
+        if force {
+            return Err("heatmap: not available on Apple trackpads".to_string());
+        }
+        return Ok(None);
+    }
     let burst_len = crate::hid::macos::MacHidDevice::open(&device.devnode)
         .and_then(|d| d.report_descriptor())
         .and_then(|desc| {

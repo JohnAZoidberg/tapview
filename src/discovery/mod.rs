@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+pub mod macos_discovery;
 #[cfg(target_os = "linux")]
 pub mod udev_discovery;
 #[cfg(target_os = "windows")]

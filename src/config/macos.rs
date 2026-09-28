@@ -12,6 +12,10 @@ use crate::hid::ReportLayout;
 use std::path::Path;
 
 pub fn discover(path: &Path) -> Option<Discovered> {
+    // Apple pads have no PTP feature reports.
+    if crate::input::macos_mt::is_mt_path(path) {
+        return None;
+    }
     let device = match MacHidDevice::open(path) {
         Ok(d) => d,
         Err(e) => {

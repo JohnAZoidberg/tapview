@@ -4,6 +4,8 @@ pub mod evdev_backend;
 pub mod hidraw_backend;
 #[cfg(target_os = "macos")]
 pub mod macos_backend;
+#[cfg(target_os = "macos")]
+pub mod macos_mt;
 #[cfg(target_os = "windows")]
 pub mod windows_backend;
 

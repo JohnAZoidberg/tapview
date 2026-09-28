@@ -97,12 +97,22 @@ impl HidDevice for MacHidDevice {
     }
 }
 
-/// Every HID device with a Digitizer / Touch Pad top-level collection.
+/// Whether the device's descriptor has PTP finger fields. `None` when the
+/// device cannot be opened, so the caller can keep it and let the open
+/// report why.
+fn has_ptp_layout(path: &Path) -> Option<bool> {
+    let desc = MacHidDevice::open(path).ok()?.report_descriptor().ok()?;
+    Some(crate::ptp::PtpLayout::from_layout(&crate::hid::ReportLayout::parse(&desc)).is_some())
+}
+
+/// Every HID device with a Digitizer / Touch Pad top-level collection that
+/// carries PTP finger fields.
 ///
 /// hidapi lists a device once per top-level collection, all under one path,
 /// so a pad that also declares a Mouse collection would otherwise show up
-/// twice.
-pub fn find_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError> {
+/// twice. Apple's own pads declare a Touch Pad collection with nothing PTP
+/// in it; they are left to MultitouchSupport.
+pub fn find_ptp_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError> {
     let api = hidapi::HidApi::new().map_err(|e| DiscoveryError::Platform(e.to_string()))?;
     let mut found: Vec<DeviceInfo> = Vec::new();
     for d in api.device_list() {
@@ -110,7 +120,7 @@ pub fn find_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError> {
             continue;
         }
         let devnode = PathBuf::from(std::ffi::OsStr::from_bytes(d.path().to_bytes()));
-        if found.iter().any(|f| f.devnode == devnode) {
+        if found.iter().any(|f| f.devnode == devnode) || has_ptp_layout(&devnode) == Some(false) {
             continue;
         }
         found.push(DeviceInfo {
@@ -131,9 +141,6 @@ pub fn find_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError> {
             vendor_id: Some(d.vendor_id()),
             product_id: Some(d.product_id()),
         });
-    }
-    if found.is_empty() {
-        return Err(DiscoveryError::NotFound);
     }
     Ok(found)
 }
