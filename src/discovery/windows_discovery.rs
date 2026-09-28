@@ -24,7 +24,7 @@ unsafe fn find_touchpads_inner() -> Result<Vec<DeviceInfo>, DiscoveryError> {
         None,
         DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
     )
-    .map_err(|e| DiscoveryError::UdevError(format!("SetupDiGetClassDevsW: {}", e)))?;
+    .map_err(|e| DiscoveryError::Platform(format!("SetupDiGetClassDevsW: {}", e)))?;
 
     let mut results = Vec::new();
     let mut index = 0u32;

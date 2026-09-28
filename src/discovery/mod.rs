@@ -78,14 +78,15 @@ impl std::fmt::Display for Bus {
 
 #[derive(Debug)]
 pub enum DiscoveryError {
-    UdevError(String),
+    /// The platform's device enumeration failed (udev, SetupAPI, IOKit).
+    Platform(String),
     NotFound,
 }
 
 impl std::fmt::Display for DiscoveryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DiscoveryError::UdevError(msg) => write!(f, "udev error: {}", msg),
+            DiscoveryError::Platform(msg) => write!(f, "device enumeration failed: {}", msg),
             DiscoveryError::NotFound => write!(f, "no touchpad found"),
         }
     }
