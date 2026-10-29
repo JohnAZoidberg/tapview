@@ -3,6 +3,7 @@ pub mod chips;
 pub mod discovery;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
+pub mod power;
 pub mod protocol;
 pub mod rates;
 #[cfg(target_os = "windows")]

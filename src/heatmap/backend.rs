@@ -1,15 +1,21 @@
 use super::chips::{identify_chip, read_frame, read_matrix_dims, ChipVariant};
+use super::power::{self, PowerStatus, SleepWake};
 use super::protocol::{read_reg, read_user_reg};
 use super::{HeatmapFrame, HidDevice};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Duration;
+use web_time::Instant;
 
 /// How long a paused native loop sleeps between checks of its switch.
 const PAUSE_POLL: Duration = Duration::from_millis(50);
+
+/// How often the loop reads the pad's power registers, between frames and
+/// also while paused (a handful of register reads, cheap next to a frame).
+const POWER_POLL: Duration = Duration::from_millis(500);
 
 /// The switches a running heatmap loop watches, shared with its
 /// [`HeatmapStream`].
@@ -26,6 +32,12 @@ pub struct HeatmapControl {
 struct Flags {
     paused: AtomicBool,
     closed: AtomicBool,
+    /// The last power registers read, `None` until read or on chips
+    /// without them.
+    power: Mutex<Option<PowerStatus>>,
+    /// A sleep-wake change picked in the UI, for the loop (which owns the
+    /// device) to write before its next power read.
+    sleep_wake: Mutex<Option<SleepWake>>,
 }
 
 impl Default for Flags {
@@ -33,6 +45,8 @@ impl Default for Flags {
         Self {
             paused: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            power: Mutex::new(None),
+            sleep_wake: Mutex::new(None),
         }
     }
 }
@@ -48,6 +62,14 @@ impl HeatmapControl {
 
     fn closed(&self) -> bool {
         self.inner.closed.load(Ordering::Relaxed)
+    }
+
+    fn take_sleep_wake(&self) -> Option<SleepWake> {
+        self.inner.sleep_wake.lock().unwrap().take()
+    }
+
+    fn set_power(&self, status: Option<PowerStatus>) {
+        *self.inner.power.lock().unwrap() = status;
     }
 }
 
@@ -71,6 +93,18 @@ impl HeatmapStream {
     /// Pause or resume polling. Takes effect before the next frame read.
     pub fn set_enabled(&self, on: bool) {
         self.control.set_enabled(on);
+    }
+
+    /// The pad's power registers as last read (at most [`POWER_POLL`]
+    /// old), `None` before the first read or on chips without them.
+    pub fn power(&self) -> Option<PowerStatus> {
+        *self.control.inner.power.lock().unwrap()
+    }
+
+    /// Choose what wakes the pad from a host SET_POWER sleep; the loop
+    /// writes it before its next power read.
+    pub fn set_sleep_wake(&self, wake: SleepWake) {
+        *self.control.inner.sleep_wake.lock().unwrap() = Some(wake);
     }
 }
 
@@ -199,9 +233,17 @@ pub async fn run_heatmap_loop<D, F, Fut>(
         log::info!("heatmap: display cols overridden to {}", display_cols);
     }
 
+    // When the power registers are next read; `None` on chips without them
+    // or once a read has failed.
+    let mut power_due = power::has_op_mode(chip).then(Instant::now);
     loop {
         if control.closed() {
             break;
+        }
+        if power_due.is_some_and(|due| Instant::now() >= due) {
+            power_due = poll_power(dev, chip, &control)
+                .await
+                .then(|| Instant::now() + POWER_POLL);
         }
         if !control.enabled() {
             pause().await;
@@ -225,6 +267,32 @@ pub async fn run_heatmap_loop<D, F, Fut>(
                 log::error!("heatmap: frame read error: {}", e);
                 break;
             }
+        }
+    }
+}
+
+/// Write a pending sleep-wake change, then read the power registers into
+/// `control`. Returns whether to keep polling: a read failure is logged and
+/// the power display dropped, but the heatmap goes on.
+async fn poll_power<D: HidDevice>(dev: &D, chip: ChipVariant, control: &HeatmapControl) -> bool {
+    if let Some(wake) = control.take_sleep_wake() {
+        match power::set_sleep_wake(dev, chip, wake).await {
+            Ok(()) => log::info!("heatmap: SET_POWER sleep now wakes on {}", wake),
+            Err(e) => log::warn!("heatmap: setting sleep wake to {}: {}", wake, e),
+        }
+    }
+    match power::read_power(dev, chip).await {
+        Ok(status) => {
+            control.set_power(Some(status));
+            true
+        }
+        Err(e) => {
+            log::warn!(
+                "heatmap: reading the power registers failed, not polling them again: {}",
+                e
+            );
+            control.set_power(None);
+            false
         }
     }
 }

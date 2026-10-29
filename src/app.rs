@@ -380,9 +380,20 @@ impl eframe::App for TapviewApp {
                     + render::HEATMAP_HEADER_HEIGHT;
                 panel = panel.exact_height(height.min(screen.height() * 0.35));
             }
-            panel.show(ctx, |ui| {
-                render::draw_heatmap_panel(ui, frame, &mut enabled);
-            });
+            let power = heatmap.power();
+            let command = panel
+                .show(ctx, |ui| {
+                    render::draw_heatmap_panel(ui, frame, &mut enabled, power)
+                })
+                .inner;
+            if let Some(wake) = command {
+                heatmap.set_sleep_wake(wake);
+            }
+            if power.is_some() {
+                // Keep the mode current while nothing else repaints (no
+                // touches, heatmap paused).
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            }
             if enabled != heatmap.enabled() {
                 heatmap.set_enabled(enabled);
             }

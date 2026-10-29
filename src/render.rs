@@ -1,4 +1,6 @@
 use crate::config::ConfigHandle;
+use crate::heatmap::power::{PowerStatus, SleepWake};
+use crate::heatmap::rates::op_mode_label;
 use crate::heatmap::HeatmapFrame;
 use crate::libinput_state::{GestureKind, LibinputState};
 use crate::multitouch::{ButtonState, TouchData};
@@ -693,14 +695,54 @@ fn heatmap_color(t: f32) -> Color32 {
     Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
-/// Draw the heatmap panel contents: a 2D grid of colored cells.
+/// The power part of the heatmap header, laid out right to left: what wakes
+/// the pad from a host SET_POWER sleep, and the run/rest mode it is in.
+/// Returns the sleep wake picked, if changed.
+fn draw_power_controls(ui: &mut egui::Ui, power: &PowerStatus) -> Option<SleepWake> {
+    let mut command = None;
+
+    if let Some(wake) = power.sleep_wake {
+        let mut picked = wake;
+        egui::ComboBox::from_id_salt("sleep_wake")
+            .selected_text(picked.to_string())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut picked, SleepWake::Touch, SleepWake::Touch.to_string());
+                ui.selectable_value(&mut picked, SleepWake::Click, SleepWake::Click.to_string());
+            })
+            .response
+            .on_hover_text(
+                "What wakes the pad from the host's SET_POWER sleep (system suspend for a \
+                 laptop pad, the keyboard firmware for an external one). Click only = HID \
+                 suspend: no scanning, and the waking click is not reported. RAM only.",
+            );
+        ui.label("Sleep wakes on");
+        if picked != wake {
+            command = Some(picked);
+        }
+        ui.separator();
+    }
+
+    ui.label(egui::RichText::new(op_mode_label(power.op_mode)).strong())
+        .on_hover_text("OBS_OP_MODE: the run/rest mode the pad is in (polled twice a second)");
+    ui.label("Mode");
+    command
+}
+
 /// Height of the heatmap panel's header row: the on/off checkbox and the
 /// matrix dimensions. All the panel shows while switched off.
 pub const HEATMAP_HEADER_HEIGHT: f32 = 28.0;
 
 /// The heatmap panel: a header with the enable checkbox (`enabled` is
-/// updated when clicked) and, while enabled, the sensor matrix below it.
-pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame, enabled: &mut bool) {
+/// updated when clicked) and the pad's power state if known, and, while
+/// enabled, the sensor matrix below it. Returns the sleep wake picked in
+/// the header, if changed.
+pub fn draw_heatmap_panel(
+    ui: &mut egui::Ui,
+    frame: &HeatmapFrame,
+    enabled: &mut bool,
+    power: Option<PowerStatus>,
+) -> Option<SleepWake> {
+    let mut command = None;
     ui.horizontal(|ui| {
         ui.set_height(HEATMAP_HEADER_HEIGHT - ui.spacing().item_spacing.y);
         ui.checkbox(enabled, "Heatmap")
@@ -709,6 +751,11 @@ pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame, enabled: &mut
             ui.label(format!("{}x{}", frame.rows, frame.cols));
         } else {
             ui.label(egui::RichText::new("off").color(Color32::GRAY));
+        }
+        if let Some(power) = power {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                command = draw_power_controls(ui, &power);
+            });
         }
     });
     // Always claim the whole panel, even when there is nothing to draw:
@@ -719,7 +766,7 @@ pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame, enabled: &mut
     let panel_rect = ui.available_rect_before_wrap();
     ui.allocate_rect(panel_rect, egui::Sense::hover());
     if !*enabled || frame.rows == 0 || frame.cols == 0 || frame.data.is_empty() {
-        return;
+        return command;
     }
     let painter = ui.painter();
 
@@ -763,4 +810,5 @@ pub fn draw_heatmap_panel(ui: &mut egui::Ui, frame: &HeatmapFrame, enabled: &mut
             );
         }
     }
+    command
 }

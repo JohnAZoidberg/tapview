@@ -123,6 +123,20 @@ struct Cli {
     #[arg(long, value_name = "[BANK:]REG=VALUE", value_parser = parse_user_reg_write, conflicts_with = "play")]
     write_user_reg: Vec<UserRegWrite>,
 
+    /// Print the PixArt pad's power state (run/rest mode, what wakes it from
+    /// a host SET_POWER sleep, the HID sleep scan rate) and exit
+    #[arg(long, conflicts_with = "play")]
+    power: bool,
+
+    /// Choose what wakes the PixArt pad from the host's next SET_POWER
+    /// sleep: touch (HID sleep, keeps scanning) or click (HID suspend, a
+    /// click wakes it and is swallowed). tapview cannot send SET_POWER
+    /// itself: the kernel does on system suspend for an I2C pad, the
+    /// keyboard firmware for an external one. RAM only, like
+    /// --write-user-reg
+    #[arg(long, value_name = "WAKE", conflicts_with = "play")]
+    sleep_wake: Option<SleepWakeArg>,
+
     /// Play back a recorded touch session (no device needed)
     #[arg(long, conflicts_with_all = ["record", "device", "libinput", "heatmap", "config"])]
     play: Option<String>,
@@ -220,9 +234,15 @@ pub fn main() {
         std::process::exit(0);
     }
 
-    if cli.rates || cli.watch_rates || !cli.write_user_reg.is_empty() {
+    let power = PowerArgs {
+        show: cli.power,
+        sleep_wake: cli.sleep_wake,
+    };
+    if cli.rates || cli.watch_rates || !cli.write_user_reg.is_empty() || power.any() {
         let show = cli.rates || cli.watch_rates;
-        if let Err(e) = pixart_registers(&device, &cli.write_user_reg, show, cli.watch_rates) {
+        if let Err(e) =
+            pixart_registers(&device, &cli.write_user_reg, &power, show, cli.watch_rates)
+        {
             log::error!("pixart: {}", e);
             std::process::exit(1);
         }
@@ -725,17 +745,70 @@ fn parse_user_reg_write(s: &str) -> Result<UserRegWrite, String> {
     })
 }
 
-/// `--write-user-reg`, `--rates` and `--watch-rates` on a PixArt pad: apply
-/// the writes, then show the run/rest-mode registers if `show`, then follow
-/// them if `watch`. Every register access is a SetFeature + GetFeature pair,
-/// so don't run this alongside another tapview that polls the heatmap of the
-/// same pad.
+/// `--sleep-wake`.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum SleepWakeArg {
+    Touch,
+    Click,
+}
+
+impl From<SleepWakeArg> for heatmap::power::SleepWake {
+    fn from(a: SleepWakeArg) -> Self {
+        match a {
+            SleepWakeArg::Touch => heatmap::power::SleepWake::Touch,
+            SleepWakeArg::Click => heatmap::power::SleepWake::Click,
+        }
+    }
+}
+
+/// `--power` and `--sleep-wake`.
+struct PowerArgs {
+    show: bool,
+    sleep_wake: Option<SleepWakeArg>,
+}
+
+impl PowerArgs {
+    fn any(&self) -> bool {
+        self.show || self.sleep_wake.is_some()
+    }
+}
+
+/// Print the power registers of a PixArt pad.
+fn print_power(status: &heatmap::power::PowerStatus, chip: heatmap::chips::ChipVariant) {
+    use heatmap::rates::op_mode_label;
+    println!("{} power state (user bank 0)", chip);
+    println!(
+        "  0x15 {:<24} {} ({})",
+        "OBS_OP_MODE",
+        op_mode_label(status.op_mode),
+        status.op_mode
+    );
+    match status.sleep_wake {
+        Some(wake) => println!("       {:<24} {}", "SET_POWER sleep wakes on", wake),
+        None => println!(
+            "       {:<24} unknown (the {}'s suspend flag is not known)",
+            "SET_POWER sleep wakes on", chip
+        ),
+    }
+    if let Some(rate) = status.hid_sleep_rate {
+        println!("       {:<24} {} Hz", "HID_SLEEP_REPORT_RATE", rate);
+    }
+}
+
+/// `--write-user-reg`, `--sleep-wake`, `--power`,
+/// `--rates` and `--watch-rates` on a PixArt pad: apply the writes, then
+/// show the power registers if asked, the run/rest-mode registers if
+/// `show`, then follow them if `watch`. Every register access is a
+/// SetFeature + GetFeature pair, so don't run this alongside another tapview
+/// that polls the heatmap of the same pad.
 fn pixart_registers(
     device: &discovery::DeviceInfo,
     writes: &[UserRegWrite],
+    power: &PowerArgs,
     show: bool,
     watch: bool,
 ) -> Result<(), String> {
+    use heatmap::power as pw;
     use heatmap::protocol::{read_user_reg, write_user_reg};
     use heatmap::rates;
 
@@ -768,10 +841,24 @@ fn pixart_registers(
             );
         }
     }
+    if let Some(wake) = power.sleep_wake {
+        let wake = wake.into();
+        pollster::block_on(pw::set_sleep_wake(&dev, chip, wake))
+            .map_err(|e| format!("sleep wake: {}", e))?;
+        println!("{} SET_POWER sleep now wakes on {}", chip, wake);
+    }
+    let wrote = !writes.is_empty() || power.sleep_wake.is_some();
+    if power.show {
+        if wrote {
+            println!();
+        }
+        let status = pollster::block_on(pw::read_power(&dev, chip)).map_err(|e| e.to_string())?;
+        print_power(&status, chip);
+    }
     if !show {
         return Ok(());
     }
-    if !writes.is_empty() {
+    if wrote || power.show {
         println!();
     }
 

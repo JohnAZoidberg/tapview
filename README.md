@@ -52,6 +52,8 @@ On a PixArt pad, `--rates` shows what the firmware is set to: the report rate, t
 
 `--write-user-reg` changes one of these registers, to see whether the firmware follows: `--write-user-reg 0x12=120 --watch-rates` writes, prints the old and the read-back value, and then watches the pad's observed rate. The registers are RAM the firmware loads from its parameter section at boot, so a pad reset or power loss restores them; to undo sooner, write the old value back. The same flag can swap and flip the coordinates a pad reports, see [PixArt touch orientation](docs/pixart-orientation.md).
 
+`--power` shows the pad's power state: the run/rest mode it is in and what wakes it from the host's HID-over-I2C SET_POWER sleep. That sleep is either HID sleep, which keeps scanning slowly and wakes on touch, or HID suspend, which stops scanning and wakes only on a click (the waking click itself is not reported). `--sleep-wake touch|click` picks which one the next SET_POWER sleep means. (FORCE_OP_MODE, 0x16, could pin the run/rest machine, but a pad forced to rest1 or rest2 behaves erratically, so tapview offers no switch for it.) tapview never sends SET_POWER itself: for a laptop's I2C pad the kernel sends it on system suspend, for an external pad the device's firmware does. The suspend flag is 0x8c bit 3 on the PCT1036 (not in PixArt's table; confirmed on a Daisy pad) and 0xb6 on the PJP343; other chips show it as unknown. Like `--write-user-reg`, these are RAM only.
+
 ## Dependencies
 
 ### Build dependencies
@@ -153,6 +155,8 @@ sudo ./target/release/tapview [OPTIONS]
 | `--dump-hidraw <N>` | Linux: print the HID report descriptor and N raw input reports as hex, then exit |
 | `--rates` | PixArt pads: print the run/rest-mode registers (report rate, idle frame rates and delays, current mode) and exit |
 | `--watch-rates` | Like `--rates`, then print a line whenever the mode, observed report rate or 0x12/0x13 change, until Ctrl-C. Don't run it next to another tapview polling the same pad's heatmap: each register read is a SetFeature/GetFeature pair |
+| `--power` | PixArt pads: print the power state (run/rest mode, what wakes it from SET_POWER sleep, HID sleep scan rate) and exit |
+| `--sleep-wake <touch\|click>` | PixArt pads (PCT1036, PJP343): what wakes the pad from the host's next SET_POWER sleep. RAM only |
 | `--write-user-reg <[BANK:]REG=VALUE>` | PixArt pads: write a user register (bank 0 unless given; hex or decimal, e.g. `0x12=120`), print old and read-back value, then exit or continue into `--rates` / `--watch-rates`. Repeatable. RAM only |
 | `-h, --help` | Show help |
 
@@ -165,7 +169,7 @@ sudo ./target/release/tapview [OPTIONS]
 | Space | Play/pause (playback mode) |
 | Left/Right | Step -/+100ms (playback mode) |
 
-The heatmap panel has a **Heatmap** checkbox in its header. Unchecking it stops polling the sensor matrix (a stream of feature-report reads that competes with everything else on the link, and over Bluetooth nearly saturates it) and shrinks the panel to the header; checking it resumes. The panel only appears on hardware that produced a frame.
+The heatmap panel has a **Heatmap** checkbox in its header. Unchecking it stops polling the sensor matrix (a stream of feature-report reads that competes with everything else on the link, and over Bluetooth nearly saturates it) and shrinks the panel to the header; checking it resumes. The panel only appears on hardware that produced a frame. On the right of the header a PixArt pad shows its run/rest **Mode** (polled twice a second, also while the heatmap is off) and, where the chip's suspend flag is known, **Sleep wakes on** touch / click only (see `--power`).
 
 ### Examples
 
@@ -325,6 +329,7 @@ src/
     chips.rs, protocol.rs    PixArt chip detection, register and burst-read protocol
     discovery.rs             Finding the heatmap-capable HID interface
     backend.rs               Polling loop and its pause/stop switches
+    power.rs                 Op mode, HID sleep/suspend flag (--power, --sleep-wake)
     rates.rs                 Run/rest-mode rate registers, per-chip layout (--rates)
     hidraw.rs, windows_hid.rs  Native HidDevice implementations
   config/
