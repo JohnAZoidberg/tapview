@@ -13,8 +13,9 @@ use web_time::Instant;
 /// How long a paused native loop sleeps between checks of its switch.
 const PAUSE_POLL: Duration = Duration::from_millis(50);
 
-/// How often the loop reads the pad's power registers, between frames and
-/// also while paused (a handful of register reads, cheap next to a frame).
+/// How often the loop reads the pad's power registers while power polling
+/// is on, between frames and also while paused (a handful of register reads,
+/// cheap next to a frame).
 const POWER_POLL: Duration = Duration::from_millis(500);
 
 /// The switches a running heatmap loop watches, shared with its
@@ -38,6 +39,10 @@ struct Flags {
     /// A sleep-wake change picked in the UI, for the loop (which owns the
     /// device) to write before its next power read.
     sleep_wake: Mutex<Option<SleepWake>>,
+    /// Whether the loop reads the power registers every [`POWER_POLL`].
+    /// Any register read takes a pad out of HID suspend, so this goes off
+    /// by itself when the pad is set to click-only wake.
+    power_polling: AtomicBool,
 }
 
 impl Default for Flags {
@@ -47,6 +52,7 @@ impl Default for Flags {
             closed: AtomicBool::new(false),
             power: Mutex::new(None),
             sleep_wake: Mutex::new(None),
+            power_polling: AtomicBool::new(true),
         }
     }
 }
@@ -70,6 +76,14 @@ impl HeatmapControl {
 
     fn set_power(&self, status: Option<PowerStatus>) {
         *self.inner.power.lock().unwrap() = status;
+    }
+
+    fn power_polling(&self) -> bool {
+        self.inner.power_polling.load(Ordering::Relaxed)
+    }
+
+    fn set_power_polling(&self, on: bool) {
+        self.inner.power_polling.store(on, Ordering::Relaxed);
     }
 }
 
@@ -95,8 +109,9 @@ impl HeatmapStream {
         self.control.set_enabled(on);
     }
 
-    /// The pad's power registers as last read (at most [`POWER_POLL`]
-    /// old), `None` before the first read or on chips without them.
+    /// The pad's power registers as last read (at most [`POWER_POLL`] old
+    /// while power polling is on), `None` before the first read or on chips
+    /// without them.
     pub fn power(&self) -> Option<PowerStatus> {
         *self.control.inner.power.lock().unwrap()
     }
@@ -105,6 +120,17 @@ impl HeatmapStream {
     /// writes it before its next power read.
     pub fn set_sleep_wake(&self, wake: SleepWake) {
         *self.control.inner.sleep_wake.lock().unwrap() = Some(wake);
+    }
+
+    /// Whether the power registers are polled. On by default; the loop
+    /// switches it off when the pad goes click-only and back on when it
+    /// goes back to touch (see [`PowerPoll::after_read`]).
+    pub fn power_polling(&self) -> bool {
+        self.control.power_polling()
+    }
+
+    pub fn set_power_polling(&self, on: bool) {
+        self.control.set_power_polling(on);
     }
 }
 
@@ -233,17 +259,26 @@ pub async fn run_heatmap_loop<D, F, Fut>(
         log::info!("heatmap: display cols overridden to {}", display_cols);
     }
 
-    // When the power registers are next read; `None` on chips without them
-    // or once a read has failed.
-    let mut power_due = power::has_op_mode(chip).then(Instant::now);
+    // `None` on chips without power registers, or once a read has failed.
+    let mut power_poll = power::has_op_mode(chip).then(PowerPoll::new);
     loop {
         if control.closed() {
             break;
         }
-        if power_due.is_some_and(|due| Instant::now() >= due) {
-            power_due = poll_power(dev, chip, &control)
-                .await
-                .then(|| Instant::now() + POWER_POLL);
+        if let Some(poll) = &mut power_poll {
+            // A sleep-wake change is written and read back even while
+            // polling is off.
+            let wake = control.take_sleep_wake();
+            if wake.is_some() || control.power_polling() && Instant::now() >= poll.next {
+                match poll_power(dev, chip, &control, wake).await {
+                    Some(status) => {
+                        let on = poll.after_read(status.sleep_wake, control.power_polling());
+                        control.set_power_polling(on);
+                        poll.next = Instant::now() + POWER_POLL;
+                    }
+                    None => power_poll = None,
+                }
+            }
         }
         if !control.enabled() {
             pause().await;
@@ -271,11 +306,60 @@ pub async fn run_heatmap_loop<D, F, Fut>(
     }
 }
 
-/// Write a pending sleep-wake change, then read the power registers into
-/// `control`. Returns whether to keep polling: a read failure is logged and
-/// the power display dropped, but the heatmap goes on.
-async fn poll_power<D: HidDevice>(dev: &D, chip: ChipVariant, control: &HeatmapControl) -> bool {
-    if let Some(wake) = control.take_sleep_wake() {
+/// The loop's bookkeeping for its power reads.
+struct PowerPoll {
+    /// When the next periodic read is due.
+    next: Instant,
+    /// The sleep wake as last read.
+    wake: Option<SleepWake>,
+    /// Polling was switched off because the pad went click-only, not by
+    /// the user.
+    auto_paused: bool,
+}
+
+impl PowerPoll {
+    fn new() -> Self {
+        Self {
+            next: Instant::now(),
+            wake: None,
+            auto_paused: false,
+        }
+    }
+
+    /// Whether power polling should be on after a read showing `wake`,
+    /// given whether it is on now. A change to click only switches it off,
+    /// since the next read would take the pad out of HID suspend again; a
+    /// change back to touch switches it on if the click-only change was
+    /// what switched it off. Without a change the user's choice stands.
+    fn after_read(&mut self, wake: Option<SleepWake>, polling: bool) -> bool {
+        if wake == self.wake {
+            return polling;
+        }
+        self.wake = wake;
+        match wake {
+            Some(SleepWake::Click) if polling => {
+                self.auto_paused = true;
+                false
+            }
+            Some(SleepWake::Touch) if self.auto_paused => {
+                self.auto_paused = false;
+                true
+            }
+            _ => polling,
+        }
+    }
+}
+
+/// Write `wake` if given, then read the power registers into `control`.
+/// Returns the status read; on a read failure that is logged and the power
+/// display dropped, but the heatmap goes on.
+async fn poll_power<D: HidDevice>(
+    dev: &D,
+    chip: ChipVariant,
+    control: &HeatmapControl,
+    wake: Option<SleepWake>,
+) -> Option<PowerStatus> {
+    if let Some(wake) = wake {
         match power::set_sleep_wake(dev, chip, wake).await {
             Ok(()) => log::info!("heatmap: SET_POWER sleep now wakes on {}", wake),
             Err(e) => log::warn!("heatmap: setting sleep wake to {}: {}", wake, e),
@@ -284,7 +368,7 @@ async fn poll_power<D: HidDevice>(dev: &D, chip: ChipVariant, control: &HeatmapC
     match power::read_power(dev, chip).await {
         Ok(status) => {
             control.set_power(Some(status));
-            true
+            Some(status)
         }
         Err(e) => {
             log::warn!(
@@ -292,7 +376,7 @@ async fn poll_power<D: HidDevice>(dev: &D, chip: ChipVariant, control: &HeatmapC
                 e
             );
             control.set_power(None);
-            false
+            None
         }
     }
 }
@@ -339,4 +423,45 @@ async fn probe_dimension_registers<D: HidDevice>(dev: &D) {
     }
     log::info!("{}", scan);
     log::info!("heatmap: --- end probe ---");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn click_only_pauses_power_polling_and_touch_resumes_it() {
+        let mut p = PowerPoll::new();
+        assert!(p.after_read(Some(SleepWake::Touch), true));
+        assert!(p.after_read(Some(SleepWake::Touch), true));
+        // The pad goes click-only: stop reading it.
+        assert!(!p.after_read(Some(SleepWake::Click), true));
+        // Read back after another change only, still click-only: stay off.
+        assert!(!p.after_read(Some(SleepWake::Click), false));
+        // Back to touch: polling comes back on by itself.
+        assert!(p.after_read(Some(SleepWake::Touch), false));
+    }
+
+    #[test]
+    fn a_pad_already_click_only_is_not_polled() {
+        let mut p = PowerPoll::new();
+        assert!(!p.after_read(Some(SleepWake::Click), true));
+    }
+
+    #[test]
+    fn the_users_choice_stands_without_a_change() {
+        let mut p = PowerPoll::new();
+        assert!(!p.after_read(Some(SleepWake::Click), true));
+        // Switched back on by hand while still click-only: leave it on.
+        assert!(p.after_read(Some(SleepWake::Click), true));
+        // Switched off by hand before the pad went click-only: going back
+        // to touch must not switch it on.
+        let mut q = PowerPoll::new();
+        assert!(!q.after_read(Some(SleepWake::Touch), false));
+        assert!(!q.after_read(Some(SleepWake::Click), false));
+        assert!(!q.after_read(Some(SleepWake::Touch), false));
+        // Chips without a known flag: never paused.
+        let mut r = PowerPoll::new();
+        assert!(r.after_read(None, true));
+    }
 }

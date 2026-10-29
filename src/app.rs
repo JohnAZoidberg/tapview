@@ -381,13 +381,17 @@ impl eframe::App for TapviewApp {
                 panel = panel.exact_height(height.min(screen.height() * 0.35));
             }
             let power = heatmap.power();
+            let mut power_polling = heatmap.power_polling();
             let command = panel
                 .show(ctx, |ui| {
-                    render::draw_heatmap_panel(ui, frame, &mut enabled, power)
+                    render::draw_heatmap_panel(ui, frame, &mut enabled, power, &mut power_polling)
                 })
                 .inner;
             if let Some(wake) = command {
                 heatmap.set_sleep_wake(wake);
+            }
+            if power_polling != heatmap.power_polling() {
+                heatmap.set_power_polling(power_polling);
             }
             if power.is_some() {
                 // Keep the mode current while nothing else repaints (no
@@ -464,10 +468,19 @@ impl eframe::App for TapviewApp {
                         (Some(frame), Some(stream)) => {
                             let mut enabled = stream.enabled();
                             let power = stream.power();
-                            let command =
-                                render::draw_heatmap_panel(ui, frame, &mut enabled, power);
+                            let mut power_polling = stream.power_polling();
+                            let command = render::draw_heatmap_panel(
+                                ui,
+                                frame,
+                                &mut enabled,
+                                power,
+                                &mut power_polling,
+                            );
                             if let Some(wake) = command {
                                 stream.set_sleep_wake(wake);
+                            }
+                            if power_polling != stream.power_polling() {
+                                stream.set_power_polling(power_polling);
                             }
                             if power.is_some() {
                                 // Keep the mode current while nothing else

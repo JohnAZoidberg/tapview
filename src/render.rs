@@ -696,9 +696,14 @@ fn heatmap_color(t: f32) -> Color32 {
 }
 
 /// The power part of the heatmap header, laid out right to left: what wakes
-/// the pad from a host SET_POWER sleep, and the run/rest mode it is in.
-/// Returns the sleep wake picked, if changed.
-fn draw_power_controls(ui: &mut egui::Ui, power: &PowerStatus) -> Option<SleepWake> {
+/// the pad from a host SET_POWER sleep, the run/rest mode it is in (grayed
+/// while not polled) and the polling switch (`polling` is updated when
+/// clicked). Returns the sleep wake picked, if changed.
+fn draw_power_controls(
+    ui: &mut egui::Ui,
+    power: &PowerStatus,
+    polling: &mut bool,
+) -> Option<SleepWake> {
     let mut command = None;
 
     if let Some(wake) = power.sleep_wake {
@@ -722,9 +727,19 @@ fn draw_power_controls(ui: &mut egui::Ui, power: &PowerStatus) -> Option<SleepWa
         ui.separator();
     }
 
-    ui.label(egui::RichText::new(op_mode_label(power.op_mode)).strong())
-        .on_hover_text("OBS_OP_MODE: the run/rest mode the pad is in (polled twice a second)");
-    ui.label("Mode");
+    let mode = egui::RichText::new(op_mode_label(power.op_mode));
+    if *polling {
+        ui.label(mode.strong())
+            .on_hover_text("OBS_OP_MODE: the run/rest mode the pad is in (polled twice a second)");
+    } else {
+        ui.label(mode.color(Color32::GRAY))
+            .on_hover_text("OBS_OP_MODE as last read; not polled");
+    }
+    ui.checkbox(polling, "Mode").on_hover_text(
+        "Read the pad's mode twice a second. Any register read takes a pad out of \
+         click-only (HID suspend) sleep, so this goes off by itself when the pad is \
+         set to click only, and back on when it is set back to touch.",
+    );
     command
 }
 
@@ -733,14 +748,16 @@ fn draw_power_controls(ui: &mut egui::Ui, power: &PowerStatus) -> Option<SleepWa
 pub const HEATMAP_HEADER_HEIGHT: f32 = 28.0;
 
 /// The heatmap panel: a header with the enable checkbox (`enabled` is
-/// updated when clicked) and the pad's power state if known, and, while
-/// enabled, the sensor matrix below it. Returns the sleep wake picked in
-/// the header, if changed.
+/// updated when clicked) and the pad's power state if known (with its
+/// polling switch, `power_polling`, likewise), and, while enabled, the
+/// sensor matrix below it. Returns the sleep wake picked in the header, if
+/// changed.
 pub fn draw_heatmap_panel(
     ui: &mut egui::Ui,
     frame: &HeatmapFrame,
     enabled: &mut bool,
     power: Option<PowerStatus>,
+    power_polling: &mut bool,
 ) -> Option<SleepWake> {
     let mut command = None;
     ui.horizontal(|ui| {
@@ -754,7 +771,7 @@ pub fn draw_heatmap_panel(
         }
         if let Some(power) = power {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                command = draw_power_controls(ui, &power);
+                command = draw_power_controls(ui, &power, power_polling);
             });
         }
     });
