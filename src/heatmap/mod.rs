@@ -13,6 +13,27 @@ use std::io;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::path::Path;
 
+/// Commands that can be sent to the heatmap backend thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlcCommand {
+    /// Force ALC IIR filter reset (clears learned baseline).
+    Reset,
+    /// Enable ALC (automatic gain adjustment).
+    Enable,
+    /// Disable ALC (freeze current gain values).
+    Disable,
+}
+
+impl std::fmt::Display for AlcCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AlcCommand::Reset => "reset",
+            AlcCommand::Enable => "enable",
+            AlcCommand::Disable => "disable",
+        })
+    }
+}
+
 /// A single frame of raw capacitive heatmap data.
 #[derive(Clone)]
 pub struct HeatmapFrame {
@@ -20,6 +41,14 @@ pub struct HeatmapFrame {
     pub cols: usize,
     /// Row-major signed 16-bit capacitance values (rows * cols elements).
     pub data: Vec<i16>,
+    /// Mean value across all cells.
+    pub mean: f64,
+    /// Slow EMA of mean, smoothing out touches to reveal baseline drift.
+    pub smoothed_mean: f64,
+    /// Drift rate: change in smoothed baseline per frame (slow EMA derivative).
+    pub drift_rate: f64,
+    /// True if sustained drift detected (firmware calibration in progress).
+    pub calibrating: bool,
 }
 
 /// Platform-independent trait for HID feature report I/O.
