@@ -31,11 +31,12 @@ pub type FrameHook = Box<dyn FnMut(&egui::Context, &mut TapviewApp)>;
 
 /// What the central panel shows while no device is open.
 ///
-/// Natively a session always exists before the window opens, so this is only
-/// a message. Front ends that connect devices at runtime (browser, Android)
-/// supply `controls`: drawn under the message every frame, they hold their
-/// own state (device lists, pending permission dialogs) and hand back a
-/// [`SessionRequest`] once something is ready.
+/// Natively, with `--device`, a session exists before the window opens, so
+/// this is only a message. Front ends that connect devices at runtime
+/// (browser, Android, the native picker) supply `controls`: drawn under the
+/// message every frame, they hold their own state (device lists, pending
+/// permission dialogs) and hand back a [`SessionRequest`] once something is
+/// ready.
 pub struct NoSessionUi {
     pub message: String,
     pub controls: Option<NoSessionControls>,

@@ -1,7 +1,8 @@
 //! An open touchpad, bundled: everything the visualizer reads from one device.
 //!
-//! The CLI builds a [`Session`] before eframe starts; the browser and Android
-//! front ends build one when the user connects a device, and the app can run
+//! The CLI builds a [`Session`] before eframe starts, or when the window's
+//! picker opens a pad; the browser and Android front ends build one when the
+//! user connects a device, and the app can run
 //! without one (showing a connect screen) or drop it when the device goes
 //! away. The libinput/pointer panel and recording playback live outside the
 //! session: they are not tied to a device.
@@ -51,8 +52,9 @@ pub struct Session {
     /// Anything that must live exactly as long as the session and be torn
     /// down with it: the browser transport keeps its event-handler closures
     /// and the open `HIDDevice` here, since nothing else would drop them.
-    /// Thread-based backends need none of this — they notice the closed
-    /// channels — and leave it `None`.
+    /// Thread-based backends notice the closed channels instead; the native
+    /// input thread watches its grab channel, and keeps the sender here
+    /// where the backend cannot grab.
     pub guard: Option<Box<dyn std::any::Any>>,
 }
 

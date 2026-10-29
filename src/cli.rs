@@ -1,6 +1,7 @@
 //! The native command-line interface: argument parsing, device selection,
 //! the `--info`/`--set-*` one-shot paths, and assembling the input, heatmap
-//! and config threads before handing over to the egui UI.
+//! and config threads before handing over to the egui UI. Without
+//! `--device`, the window picks and switches pads itself ([`picker`]).
 
 use std::io::IsTerminal;
 
@@ -20,6 +21,7 @@ use crate::input::windows_backend::WindowsBackend;
 use crate::input::InputBackend;
 #[cfg(target_os = "linux")]
 use crate::libinput_backend;
+use crate::libinput_state::LibinputEvent;
 use crate::session::{GrabCommand, Session};
 #[cfg(target_os = "windows")]
 use crate::windows_input_backend;
@@ -28,6 +30,8 @@ use clap::Parser;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+mod picker;
 
 #[derive(Parser)]
 #[command(name = "tapview", about = "Touchpad Visualizer")]
@@ -183,13 +187,7 @@ pub fn main() {
 
     // --- Normal / Recording mode: need a device ---
 
-    // Discover touchpad
-    #[cfg(target_os = "linux")]
-    let devices = UdevDiscovery::find_touchpads();
-    #[cfg(target_os = "windows")]
-    let devices = WindowsDiscovery::find_touchpads();
-
-    let devices = match devices {
+    let devices = match find_touchpads() {
         Ok(d) => d,
         Err(e) => {
             log::error!("Unable to find touchpad: {}", e);
@@ -202,6 +200,40 @@ pub fn main() {
         std::process::exit(0);
     }
 
+    let power = PowerArgs {
+        show: cli.power,
+        sleep_wake: cli.sleep_wake,
+    };
+    let pixart = cli.rates || cli.watch_rates || !cli.write_user_reg.is_empty() || power.any();
+    #[cfg(target_os = "linux")]
+    let dump = cli.dump_hidraw.is_some();
+    #[cfg(target_os = "windows")]
+    let dump = false;
+    // The paths that print and exit have no window to pick a device in.
+    let one_shot = cli.info
+        || cli.set_haptic_intensity.is_some()
+        || cli.set_click_force.is_some()
+        || pixart
+        || dump;
+
+    let mut opts = OpenOptions {
+        config: Feature::from_flags(cli.config, cli.no_config),
+        heatmap: Feature::from_flags(cli.heatmap, cli.no_heatmap),
+        heatmap_cols: cli.heatmap_cols,
+        libinput: !cli.no_libinput,
+        #[cfg(target_os = "linux")]
+        hidraw: cli.hidraw,
+        record: cli.record.clone(),
+    };
+    let title = if opts.record.is_some() {
+        "Tapview - Touchpad Visualizer (Recording)"
+    } else {
+        "Tapview - Touchpad Visualizer"
+    };
+    // Without --device the window can switch pads, so it gets the picker
+    // even when the one pad there is opens straight away.
+    let picker = cli.device.is_none().then(|| devices.clone());
+
     let device = if let Some(ref wanted) = cli.device {
         match discovery::find_device(&devices, wanted) {
             Some(d) => d.clone(),
@@ -210,9 +242,27 @@ pub fn main() {
                 std::process::exit(1);
             }
         }
-    } else if devices.len() == 1 || !std::io::stdin().is_terminal() {
-        // Single device, or no terminal to ask on (e.g. launched from a
-        // desktop menu): take the first (internal touchpads sort first).
+    } else if devices.len() == 1 {
+        devices[0].clone()
+    } else if !one_shot {
+        // Several pads and a window to choose in: its picker asks.
+        #[cfg(target_os = "windows")]
+        let libinput_rx = opts
+            .libinput
+            .then(windows_input_backend::spawn_windows_input_thread);
+        #[cfg(target_os = "linux")]
+        let libinput_rx = None;
+        run_window(
+            trails,
+            title,
+            None,
+            libinput_rx,
+            picker.map(|devices| picker::Picker::new(devices, opts)),
+        );
+        return;
+    } else if !std::io::stdin().is_terminal() {
+        // No terminal to ask on: take the first (internal touchpads sort
+        // first).
         devices[0].clone()
     } else {
         match discovery::prompt_for_device(&devices, cli.verbose) {
@@ -234,11 +284,7 @@ pub fn main() {
         std::process::exit(0);
     }
 
-    let power = PowerArgs {
-        show: cli.power,
-        sleep_wake: cli.sleep_wake,
-    };
-    if cli.rates || cli.watch_rates || !cli.write_user_reg.is_empty() || power.any() {
+    if pixart {
         let show = cli.rates || cli.watch_rates;
         if let Err(e) =
             pixart_registers(&device, &cli.write_user_reg, &power, show, cli.watch_rates)
@@ -249,75 +295,24 @@ pub fn main() {
         std::process::exit(0);
     }
 
-    // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
-    #[cfg(target_os = "linux")]
-    let evdev_extents = crate::input::evdev_backend::read_axis_extents(&device.devnode);
-    #[cfg(target_os = "windows")]
-    let evdev_extents = None;
-
-    // Discover PTP configuration features (auto-detected by default, forced with --config)
-    let ptp_config = if cli.no_config && !cli.info {
-        None
-    } else {
-        let cfg = config::discover(&device.devnode).map(Ptp::initialize);
-        if cfg.is_none() && cli.config {
-            log::error!("config: no PTP configuration features found");
+    // --info shows the PTP configuration even with --no-config
+    let config = if cli.info { Feature::Auto } else { opts.config };
+    let probe = match probe(&device, config) {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!("{}", e);
             std::process::exit(1);
         }
-        cfg
-    };
-
-    // The touchpad's axes as its HID descriptor declares them. On Linux the
-    // config backend parsed the descriptor; Windows exposes none, so the
-    // ranges come from the Touch Pad collection's preparsed data, and the
-    // config panel is handed them for its Physical Size line.
-    #[cfg(target_os = "linux")]
-    let hid_axes = ptp_config
-        .as_ref()
-        .and_then(|cfg| cfg.desc.physical_size.clone());
-    #[cfg(target_os = "windows")]
-    let hid_axes = crate::input::windows_backend::read_axis_info(&device.devnode);
-    #[cfg(target_os = "windows")]
-    let ptp_config = ptp_config.map(|mut cfg| {
-        if cfg.desc.physical_size.is_none() {
-            cfg.desc.physical_size = hid_axes.clone();
-        }
-        cfg
-    });
-
-    // Log and compare axis ranges from both sources
-    if let Some((ex, ey)) = &evdev_extents {
-        log::info!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
-    }
-    let axis_swap_detected = if let Some(phys) = &hid_axes {
-        log::info!(
-            "axis: HID descriptor: x={}..{}, y={}..{}",
-            phys.x.logical_min,
-            phys.x.logical_max,
-            phys.y.logical_min,
-            phys.y.logical_max
-        );
-        if let Some((ex, ey)) = &evdev_extents {
-            if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
-                log::warn!("axis: evdev and HID descriptor disagree!");
-                if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
-                    log::warn!("axis: looks like a kernel axis swap");
-                    Some(true)
-                } else {
-                    Some(false)
-                }
-            } else {
-                Some(false)
-            }
-        } else {
-            None
-        }
-    } else {
-        None
     };
 
     // --info: print device info and exit without launching UI
     if cli.info {
+        let Probe {
+            evdev_extents,
+            hid_axes,
+            ptp_config,
+            axis_swap_detected,
+        } = &probe;
         println!("Device");
         println!("  Path:             {}", device.devnode.display());
         println!("  Integration:      {:?}", device.integration);
@@ -329,14 +324,14 @@ pub fn main() {
         }
         println!();
 
-        if let Some((ex, ey)) = &evdev_extents {
+        if let Some((ex, ey)) = evdev_extents {
             println!("Evdev axes");
             println!("  X range:          0..{}", ex);
             println!("  Y range:          0..{}", ey);
             println!();
         }
 
-        if let Some(phys) = &hid_axes {
+        if let Some(phys) = hid_axes {
             println!("HID descriptor");
             println!(
                 "  X logical:        {}..{}",
@@ -365,7 +360,7 @@ pub fn main() {
             println!();
         }
 
-        if let Some(cfg) = &ptp_config {
+        if let Some(cfg) = ptp_config {
             println!("PTP config");
             if let Some(mode) = cfg.state.input_mode {
                 println!(
@@ -446,7 +441,7 @@ pub fn main() {
 
     // --- Set-and-exit flags: apply config changes and exit before launching UI ---
     if cli.set_haptic_intensity.is_some() || cli.set_click_force.is_some() {
-        let mut cfg = match ptp_config {
+        let mut cfg = match probe.ptp_config {
             Some(c) => c,
             None => {
                 log::error!("config: device has no PTP/haptic configuration features");
@@ -493,27 +488,177 @@ pub fn main() {
         std::process::exit(0);
     }
 
-    // Create recorder if --record was specified
+    let session = match start_session(&device, probe, &mut opts) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    let libinput_rx = opts.libinput.then(|| spawn_libinput(&device));
+    run_window(
+        trails,
+        title,
+        Some(session),
+        libinput_rx,
+        picker.map(|devices| picker::Picker::new(devices, opts)),
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn find_touchpads() -> Result<Vec<discovery::DeviceInfo>, discovery::DiscoveryError> {
+    UdevDiscovery::find_touchpads()
+}
+
+#[cfg(target_os = "windows")]
+fn find_touchpads() -> Result<Vec<discovery::DeviceInfo>, discovery::DiscoveryError> {
+    WindowsDiscovery::find_touchpads()
+}
+
+/// Whether a panel's backend runs: `--no-*` turns it off, `--*` makes a
+/// failure to start it an error, and by default it runs where it can.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Feature {
+    Off,
+    Auto,
+    Forced,
+}
+
+impl Feature {
+    fn from_flags(force: bool, off: bool) -> Self {
+        if off {
+            Feature::Off
+        } else if force {
+            Feature::Forced
+        } else {
+            Feature::Auto
+        }
+    }
+}
+
+/// What the command line asked of the window's session; the picker opens
+/// every pad it is asked to with the same.
+struct OpenOptions {
+    config: Feature,
+    heatmap: Feature,
+    heatmap_cols: Option<usize>,
+    libinput: bool,
+    #[cfg(target_os = "linux")]
+    hidraw: bool,
+    /// `--record`, taken by the first session opened: a pad picked later
+    /// must not overwrite the recording.
+    record: Option<String>,
+}
+
+/// What a touchpad says about itself, read before the window opens so that
+/// `--info`, `--set-*` and the first UI frame all see the same.
+struct Probe {
+    /// Axis extents as evdev reports them (post-kernel-swap, matches actual
+    /// event coordinates).
+    evdev_extents: Option<(i32, i32)>,
+    /// The axes as the HID descriptor declares them.
+    hid_axes: Option<config::TouchpadPhysicalSize>,
+    ptp_config: Option<Ptp>,
+    axis_swap_detected: Option<bool>,
+}
+
+fn probe(device: &discovery::DeviceInfo, config: Feature) -> Result<Probe, String> {
+    // Read evdev axis extents (post-kernel-swap, matches actual event coordinates)
+    #[cfg(target_os = "linux")]
+    let evdev_extents = crate::input::evdev_backend::read_axis_extents(&device.devnode);
+    #[cfg(target_os = "windows")]
+    let evdev_extents = None;
+
+    // Discover PTP configuration features (auto-detected by default, forced with --config)
+    let ptp_config = if config == Feature::Off {
+        None
+    } else {
+        let cfg = config::discover(&device.devnode).map(Ptp::initialize);
+        if cfg.is_none() && config == Feature::Forced {
+            return Err("config: no PTP configuration features found".to_string());
+        }
+        cfg
+    };
+
+    // The touchpad's axes as its HID descriptor declares them. On Linux the
+    // config backend parsed the descriptor; Windows exposes none, so the
+    // ranges come from the Touch Pad collection's preparsed data, and the
+    // config panel is handed them for its Physical Size line.
+    #[cfg(target_os = "linux")]
+    let hid_axes = ptp_config
+        .as_ref()
+        .and_then(|cfg| cfg.desc.physical_size.clone());
+    #[cfg(target_os = "windows")]
+    let hid_axes = crate::input::windows_backend::read_axis_info(&device.devnode);
+    #[cfg(target_os = "windows")]
+    let ptp_config = ptp_config.map(|mut cfg| {
+        if cfg.desc.physical_size.is_none() {
+            cfg.desc.physical_size = hid_axes.clone();
+        }
+        cfg
+    });
+
+    // Log and compare axis ranges from both sources
+    if let Some((ex, ey)) = &evdev_extents {
+        log::info!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
+    }
+    let axis_swap_detected = if let Some(phys) = &hid_axes {
+        log::info!(
+            "axis: HID descriptor: x={}..{}, y={}..{}",
+            phys.x.logical_min,
+            phys.x.logical_max,
+            phys.y.logical_min,
+            phys.y.logical_max
+        );
+        if let Some((ex, ey)) = &evdev_extents {
+            if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
+                log::warn!("axis: evdev and HID descriptor disagree!");
+                if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
+                    log::warn!("axis: looks like a kernel axis swap");
+                    Some(true)
+                } else {
+                    Some(false)
+                }
+            } else {
+                Some(false)
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(Probe {
+        evdev_extents,
+        hid_axes,
+        ptp_config,
+        axis_swap_detected,
+    })
+}
+
+/// Open a probed touchpad for the window: the recorder if one is still to
+/// be made, the input thread, the heatmap and the config worker.
+fn start_session(
+    device: &discovery::DeviceInfo,
+    probe: Probe,
+    opts: &mut OpenOptions,
+) -> Result<Session, String> {
     // Resolve axis extents for recording: prefer evdev, fall back to the HID descriptor
-    let record_extents = evdev_extents.or_else(|| {
-        hid_axes
+    let record_extents = probe.evdev_extents.or_else(|| {
+        probe
+            .hid_axes
             .as_ref()
             .map(|phys| (phys.x.logical_max, phys.y.logical_max))
     });
 
     // Create recorder if --record was specified
-    let recorder = if let Some(ref record_path) = cli.record {
+    let recorder = if let Some(record_path) = opts.record.take() {
         let (ex, ey) = record_extents.unwrap_or((0, 0));
-        match recording::Recorder::create(record_path, ex, ey) {
-            Ok(r) => {
-                log::info!("Recording to: {}", record_path);
-                Some(r)
-            }
-            Err(e) => {
-                log::error!("Failed to create recording file: {}", e);
-                std::process::exit(1);
-            }
-        }
+        let r = recording::Recorder::create(&record_path, ex, ey)
+            .map_err(|e| format!("Failed to create recording file: {}", e))?;
+        log::info!("Recording to: {}", record_path);
+        Some(r)
     } else {
         None
     };
@@ -525,21 +670,10 @@ pub fn main() {
     // Spawn input thread. `session_extents` are the coordinates the touches
     // arrive in; `can_grab` whether the backend supports exclusive access.
     #[cfg(target_os = "linux")]
-    let (session_extents, can_grab) = if cli.hidraw {
-        let hidraw_path = match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("hidraw: failed to find sibling hidraw device: {}", e);
-                std::process::exit(1);
-            }
-        };
-        let backend = match HidrawBackend::open(&hidraw_path) {
-            Ok(b) => b,
-            Err(e) => {
-                log::error!("hidraw: {}", e);
-                std::process::exit(1);
-            }
-        };
+    let (session_extents, can_grab) = if opts.hidraw {
+        let hidraw_path = heatmap::discovery::find_sibling_hidraw(&device.devnode)
+            .map_err(|e| format!("hidraw: failed to find sibling hidraw device: {}", e))?;
+        let backend = HidrawBackend::open(&hidraw_path).map_err(|e| format!("hidraw: {}", e))?;
         let (x_max, y_max) = backend.extents();
         log::info!(
             "hidraw: reading touches from {} (report {}, {} finger slots, up to {} contacts)",
@@ -557,7 +691,7 @@ pub fn main() {
             Ok(backend) => run_input_thread(backend, grab_rx, touch_tx),
             Err(e) => log::error!("Failed to open device: {}", e),
         });
-        (evdev_extents, true)
+        (probe.evdev_extents, true)
     };
 
     #[cfg(target_os = "windows")]
@@ -569,7 +703,8 @@ pub fn main() {
         });
         // RawInput hands over the reports in the descriptor's coordinates.
         // Windows doesn't support touchpad grab.
-        let extents = hid_axes
+        let extents = probe
+            .hid_axes
             .as_ref()
             .map(|phys| (phys.x.logical_max, phys.y.logical_max));
         if let Some((x_max, y_max)) = extents {
@@ -578,55 +713,84 @@ pub fn main() {
         (extents, false)
     };
 
-    // Spawn libinput/interpreted input backend thread (enabled by default)
-    #[cfg(target_os = "linux")]
-    let libinput_rx = if !cli.no_libinput {
-        Some(libinput_backend::spawn_libinput_thread(&device.devnode))
+    // The input thread ends when the grab channel closes. A backend that
+    // cannot grab gets no grab UI, so the sender is only kept alive, for as
+    // long as the session.
+    let (grab_tx, guard) = if can_grab {
+        (Some(grab_tx), None)
     } else {
-        None
-    };
-
-    #[cfg(target_os = "windows")]
-    let libinput_rx = if !cli.no_libinput {
-        Some(windows_input_backend::spawn_windows_input_thread())
-    } else {
-        None
+        (None, Some(Box::new(grab_tx) as Box<dyn std::any::Any>))
     };
 
     // Spawn heatmap backend thread (auto-detected by default, forced with --heatmap)
-    let heatmap = if cli.no_heatmap {
+    let heatmap = if opts.heatmap == Feature::Off {
         None
     } else {
-        spawn_heatmap(&device, cli.heatmap_cols, cli.heatmap)
+        spawn_heatmap(device, opts.heatmap_cols, opts.heatmap == Feature::Forced)?
     };
 
-    // Run eframe
-    let is_recording = recorder.is_some();
-    let mut initial_width = if libinput_rx.is_some() { 1100.0 } else { 672.0 };
-    if ptp_config.is_some() {
-        initial_width += 220.0;
-    }
-    let initial_height = if heatmap.is_some() { 650.0 } else { 432.0 };
-    let config_handle = ptp_config.map(Ptp::into_handle);
-    let session = Session {
+    Ok(Session {
         name: device.label(),
         touch_rx: Some(touch_rx),
-        grab_tx: can_grab.then_some(grab_tx),
+        grab_tx,
         heatmap,
-        config: config_handle,
+        config: probe.ptp_config.map(Ptp::into_handle),
         extents: session_extents,
         recorder,
         lost: None,
-        guard: None,
-    };
-    let title = if is_recording {
-        "Tapview - Touchpad Visualizer (Recording)"
+        guard,
+    })
+}
+
+/// Probe and open a touchpad picked in the window.
+fn open_for_window(
+    device: &discovery::DeviceInfo,
+    opts: &mut OpenOptions,
+) -> Result<Session, String> {
+    log::info!("Opening touchpad: {}", device);
+    let probe = probe(device, opts.config)?;
+    start_session(device, probe, opts)
+}
+
+/// The pointer panel's events: libinput's interpretation of the device on
+/// Linux (one context per device, so it follows the session); Windows' mouse
+/// hook sees every pointer, so this runs once per window.
+#[cfg(target_os = "linux")]
+fn spawn_libinput(device: &discovery::DeviceInfo) -> mpsc::Receiver<LibinputEvent> {
+    libinput_backend::spawn_libinput_thread(&device.devnode)
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_libinput(_device: &discovery::DeviceInfo) -> mpsc::Receiver<LibinputEvent> {
+    windows_input_backend::spawn_windows_input_thread()
+}
+
+/// A window size that fits what is on screen: the pointer panel and the
+/// config panel widen it, the heatmap makes it taller.
+fn window_size(session: Option<&Session>, libinput: bool) -> egui::Vec2 {
+    let mut width = if libinput { 1100.0 } else { 672.0 };
+    if session.is_some_and(|s| s.config.is_some()) {
+        width += 220.0;
+    }
+    let height = if session.is_some_and(|s| s.heatmap.is_some()) {
+        650.0
     } else {
-        "Tapview - Touchpad Visualizer"
+        432.0
     };
+    egui::vec2(width, height)
+}
+
+/// Run eframe on a session, a picker, or both.
+fn run_window(
+    trails: usize,
+    title: &str,
+    session: Option<Session>,
+    libinput_rx: Option<mpsc::Receiver<LibinputEvent>>,
+    picker: Option<picker::Picker>,
+) {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([initial_width, initial_height])
+            .with_inner_size(window_size(session.as_ref(), libinput_rx.is_some()))
             .with_min_inner_size([320.0, 240.0])
             .with_title(title)
             .with_always_on_top(),
@@ -637,11 +801,14 @@ pub fn main() {
         "Tapview",
         options,
         Box::new(move |_cc| {
-            Ok(Box::new(
-                TapviewApp::new(trails)
-                    .with_session(session)
-                    .with_libinput(libinput_rx),
-            ))
+            let mut app = TapviewApp::new(trails).with_libinput(libinput_rx);
+            if let Some(session) = session {
+                app = app.with_session(session);
+            }
+            if let Some(picker) = picker {
+                app = picker.install(app);
+            }
+            Ok(Box::new(app))
         }),
     )
     .expect("Failed to run eframe");
@@ -656,19 +823,21 @@ fn run_input_thread<B: InputBackend>(
 ) {
     loop {
         // Check for grab/ungrab commands
-        if let Ok(cmd) = grab_rx.try_recv() {
-            match cmd {
-                GrabCommand::Grab => {
-                    if let Err(e) = backend.grab() {
-                        log::error!("Grab failed: {}", e);
-                    }
-                }
-                GrabCommand::Ungrab => {
-                    if let Err(e) = backend.ungrab() {
-                        log::error!("Ungrab failed: {}", e);
-                    }
+        match grab_rx.try_recv() {
+            Ok(GrabCommand::Grab) => {
+                if let Err(e) = backend.grab() {
+                    log::error!("Grab failed: {}", e);
                 }
             }
+            Ok(GrabCommand::Ungrab) => {
+                if let Err(e) = backend.ungrab() {
+                    log::error!("Ungrab failed: {}", e);
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            // The session is gone (switched away from): while the pad is
+            // idle the touch channel would never tell.
+            Err(mpsc::TryRecvError::Disconnected) => break,
         }
 
         match backend.poll_events() {
@@ -997,40 +1166,35 @@ fn check_set_value(
     }
 }
 
+/// Start the heatmap where the pad has one; with `force`, not finding it is
+/// an error rather than a session without a heatmap.
 #[cfg(target_os = "linux")]
 fn spawn_heatmap(
     device: &discovery::DeviceInfo,
     heatmap_cols: Option<usize>,
     force: bool,
-) -> Option<heatmap::backend::HeatmapStream> {
+) -> Result<Option<heatmap::backend::HeatmapStream>, String> {
     match heatmap::discovery::find_sibling_hidraw(&device.devnode) {
         Ok(hidraw_path) => {
             log::info!("heatmap: found hidraw device: {}", hidraw_path.display());
             match heatmap::discovery::determine_burst_report_length(&hidraw_path) {
                 Ok(burst_len) => {
                     log::info!("heatmap: burst report length = {}", burst_len);
-                    Some(heatmap::backend::spawn_heatmap_thread(
+                    Ok(Some(heatmap::backend::spawn_heatmap_thread(
                         &hidraw_path,
                         burst_len,
                         heatmap_cols,
-                    ))
+                    )))
                 }
-                Err(e) => {
-                    if force {
-                        log::error!("heatmap: failed to determine burst length: {}", e);
-                        std::process::exit(1);
-                    }
-                    None
-                }
+                Err(e) if force => Err(format!("heatmap: failed to determine burst length: {}", e)),
+                Err(_) => Ok(None),
             }
         }
-        Err(e) => {
-            if force {
-                log::error!("heatmap: failed to find sibling hidraw device: {}", e);
-                std::process::exit(1);
-            }
-            None
-        }
+        Err(e) if force => Err(format!(
+            "heatmap: failed to find sibling hidraw device: {}",
+            e
+        )),
+        Err(_) => Ok(None),
     }
 }
 
@@ -1039,7 +1203,7 @@ fn spawn_heatmap(
     device: &discovery::DeviceInfo,
     heatmap_cols: Option<usize>,
     force: bool,
-) -> Option<heatmap::backend::HeatmapStream> {
+) -> Result<Option<heatmap::backend::HeatmapStream>, String> {
     match heatmap::discovery::find_hid_device_for_heatmap(&device.devnode) {
         Ok((hid_path, burst_len)) => {
             log::info!(
@@ -1047,19 +1211,14 @@ fn spawn_heatmap(
                 hid_path.display(),
                 burst_len
             );
-            Some(heatmap::backend::spawn_heatmap_thread(
+            Ok(Some(heatmap::backend::spawn_heatmap_thread(
                 &hid_path,
                 burst_len,
                 heatmap_cols,
-            ))
+            )))
         }
-        Err(e) => {
-            if force {
-                log::error!("heatmap: {}", e);
-                std::process::exit(1);
-            }
-            None
-        }
+        Err(e) if force => Err(format!("heatmap: {}", e)),
+        Err(_) => Ok(None),
     }
 }
 
