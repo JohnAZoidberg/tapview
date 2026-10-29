@@ -463,7 +463,17 @@ impl eframe::App for TapviewApp {
                     match (&self.heatmap_frame, stream) {
                         (Some(frame), Some(stream)) => {
                             let mut enabled = stream.enabled();
-                            render::draw_heatmap_panel(ui, frame, &mut enabled);
+                            let power = stream.power();
+                            let command =
+                                render::draw_heatmap_panel(ui, frame, &mut enabled, power);
+                            if let Some(wake) = command {
+                                stream.set_sleep_wake(wake);
+                            }
+                            if power.is_some() {
+                                // Keep the mode current while nothing else
+                                // repaints (no touches, heatmap paused).
+                                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+                            }
                             if enabled != stream.enabled() {
                                 stream.set_enabled(enabled);
                             }
