@@ -267,33 +267,47 @@ pub fn main() {
         cfg
     };
 
+    // The touchpad's axes as its HID descriptor declares them. On Linux the
+    // config backend parsed the descriptor; Windows exposes none, so the
+    // ranges come from the Touch Pad collection's preparsed data, and the
+    // config panel is handed them for its Physical Size line.
+    #[cfg(target_os = "linux")]
+    let hid_axes = ptp_config
+        .as_ref()
+        .and_then(|cfg| cfg.desc.physical_size.clone());
+    #[cfg(target_os = "windows")]
+    let hid_axes = crate::input::windows_backend::read_axis_info(&device.devnode);
+    #[cfg(target_os = "windows")]
+    let ptp_config = ptp_config.map(|mut cfg| {
+        if cfg.desc.physical_size.is_none() {
+            cfg.desc.physical_size = hid_axes.clone();
+        }
+        cfg
+    });
+
     // Log and compare axis ranges from both sources
     if let Some((ex, ey)) = &evdev_extents {
         log::info!("axis: evdev extents: x=0..{}, y=0..{}", ex, ey);
     }
-    let axis_swap_detected = if let Some(cfg) = &ptp_config {
-        if let Some(phys) = &cfg.desc.physical_size {
-            log::info!(
-                "axis: HID descriptor: x={}..{}, y={}..{}",
-                phys.x.logical_min,
-                phys.x.logical_max,
-                phys.y.logical_min,
-                phys.y.logical_max
-            );
-            if let Some((ex, ey)) = &evdev_extents {
-                if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
-                    log::warn!("axis: evdev and HID descriptor disagree!");
-                    if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
-                        log::warn!("axis: looks like a kernel axis swap");
-                        Some(true)
-                    } else {
-                        Some(false)
-                    }
+    let axis_swap_detected = if let Some(phys) = &hid_axes {
+        log::info!(
+            "axis: HID descriptor: x={}..{}, y={}..{}",
+            phys.x.logical_min,
+            phys.x.logical_max,
+            phys.y.logical_min,
+            phys.y.logical_max
+        );
+        if let Some((ex, ey)) = &evdev_extents {
+            if *ex != phys.x.logical_max || *ey != phys.y.logical_max {
+                log::warn!("axis: evdev and HID descriptor disagree!");
+                if *ex == phys.y.logical_max && *ey == phys.x.logical_max {
+                    log::warn!("axis: looks like a kernel axis swap");
+                    Some(true)
                 } else {
                     Some(false)
                 }
             } else {
-                None
+                Some(false)
             }
         } else {
             None
@@ -322,36 +336,36 @@ pub fn main() {
             println!();
         }
 
-        if let Some(cfg) = &ptp_config {
-            if let Some(phys) = &cfg.desc.physical_size {
-                println!("HID descriptor");
-                println!(
-                    "  X logical:        {}..{}",
-                    phys.x.logical_min, phys.x.logical_max
-                );
-                println!(
-                    "  Y logical:        {}..{}",
-                    phys.y.logical_min, phys.y.logical_max
-                );
-                println!(
-                    "  X physical:       {}..{}",
-                    phys.x.physical_min, phys.x.physical_max
-                );
-                println!(
-                    "  Y physical:       {}..{}",
-                    phys.y.physical_min, phys.y.physical_max
-                );
-                println!(
-                    "  X size:           {:.1} mm ({:.1} units/mm)",
-                    phys.x.size_mm, phys.x.resolution
-                );
-                println!(
-                    "  Y size:           {:.1} mm ({:.1} units/mm)",
-                    phys.y.size_mm, phys.y.resolution
-                );
-                println!();
-            }
+        if let Some(phys) = &hid_axes {
+            println!("HID descriptor");
+            println!(
+                "  X logical:        {}..{}",
+                phys.x.logical_min, phys.x.logical_max
+            );
+            println!(
+                "  Y logical:        {}..{}",
+                phys.y.logical_min, phys.y.logical_max
+            );
+            println!(
+                "  X physical:       {}..{}",
+                phys.x.physical_min, phys.x.physical_max
+            );
+            println!(
+                "  Y physical:       {}..{}",
+                phys.y.physical_min, phys.y.physical_max
+            );
+            println!(
+                "  X size:           {:.1} mm ({:.1} units/mm)",
+                phys.x.size_mm, phys.x.resolution
+            );
+            println!(
+                "  Y size:           {:.1} mm ({:.1} units/mm)",
+                phys.y.size_mm, phys.y.resolution
+            );
+            println!();
+        }
 
+        if let Some(cfg) = &ptp_config {
             println!("PTP config");
             if let Some(mode) = cfg.state.input_mode {
                 println!(
@@ -480,14 +494,11 @@ pub fn main() {
     }
 
     // Create recorder if --record was specified
-    // Resolve axis extents for recording: prefer evdev, fall back to PTP logical extents
+    // Resolve axis extents for recording: prefer evdev, fall back to the HID descriptor
     let record_extents = evdev_extents.or_else(|| {
-        ptp_config.as_ref().and_then(|cfg| {
-            cfg.desc
-                .physical_size
-                .as_ref()
-                .map(|phys| (phys.x.logical_max, phys.y.logical_max))
-        })
+        hid_axes
+            .as_ref()
+            .map(|phys| (phys.x.logical_max, phys.y.logical_max))
     });
 
     // Create recorder if --record was specified
@@ -556,8 +567,15 @@ pub fn main() {
             Ok(backend) => run_input_thread(backend, grab_rx, touch_tx),
             Err(e) => log::error!("Failed to open device: {}", e),
         });
-        // Windows doesn't support touchpad grab
-        (evdev_extents, false)
+        // RawInput hands over the reports in the descriptor's coordinates.
+        // Windows doesn't support touchpad grab.
+        let extents = hid_axes
+            .as_ref()
+            .map(|phys| (phys.x.logical_max, phys.y.logical_max));
+        if let Some((x_max, y_max)) = extents {
+            log::info!("axis: HID report extents: x=0..{}, y=0..{}", x_max, y_max);
+        }
+        (extents, false)
     };
 
     // Spawn libinput/interpreted input backend thread (enabled by default)

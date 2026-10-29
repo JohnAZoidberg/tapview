@@ -1,4 +1,6 @@
 use super::{InputBackend, InputError, TouchState};
+use crate::config::{layout_backend::axis_physical_info, TouchpadPhysicalSize};
+use crate::hid::{ReportField, ReportKind};
 use crate::multitouch::{ButtonState, TouchData, MAX_TOUCH_POINTS};
 use std::collections::HashMap;
 use std::path::Path;
@@ -297,29 +299,9 @@ unsafe fn ensure_preparsed_cache(device_handle: HANDLE) {
             return;
         }
 
-        // Get preparsed data size
-        let mut data_size = 0u32;
-        if GetRawInputDeviceInfoW(
-            Some(device_handle),
-            RIDI_PREPARSEDDATA,
-            None,
-            &mut data_size,
-        ) != 0
-        {
+        let Some(preparsed_buf) = preparsed_data(device_handle) else {
             return;
-        }
-
-        let mut preparsed_buf = vec![0u8; data_size as usize];
-        let read = GetRawInputDeviceInfoW(
-            Some(device_handle),
-            RIDI_PREPARSEDDATA,
-            Some(preparsed_buf.as_mut_ptr() as *mut std::ffi::c_void),
-            &mut data_size,
-        );
-        if read == u32::MAX {
-            return;
-        }
-
+        };
         let preparsed = PHIDP_PREPARSED_DATA(preparsed_buf.as_ptr() as isize);
 
         let mut caps = HIDP_CAPS::default();
@@ -327,18 +309,7 @@ unsafe fn ensure_preparsed_cache(device_handle: HANDLE) {
             return;
         }
 
-        // Get value caps
-        let mut num_value_caps = caps.NumberInputValueCaps;
-        let mut value_caps = vec![HIDP_VALUE_CAPS::default(); num_value_caps as usize];
-        if num_value_caps > 0 {
-            let _ = HidP_GetValueCaps(
-                HidP_Input,
-                value_caps.as_mut_ptr(),
-                &mut num_value_caps,
-                preparsed,
-            );
-            value_caps.truncate(num_value_caps as usize);
-        }
+        let value_caps = input_value_caps(preparsed, &caps);
 
         // Get button caps
         let mut num_button_caps = caps.NumberInputButtonCaps;
@@ -371,6 +342,127 @@ unsafe fn ensure_preparsed_cache(device_handle: HANDLE) {
             },
         );
     });
+}
+
+/// A device's preparsed data (Windows' parsed form of its report
+/// descriptor), from RawInput.
+unsafe fn preparsed_data(device_handle: HANDLE) -> Option<Vec<u8>> {
+    let mut data_size = 0u32;
+    if GetRawInputDeviceInfoW(
+        Some(device_handle),
+        RIDI_PREPARSEDDATA,
+        None,
+        &mut data_size,
+    ) != 0
+    {
+        return None;
+    }
+
+    let mut buf = vec![0u8; data_size as usize];
+    let read = GetRawInputDeviceInfoW(
+        Some(device_handle),
+        RIDI_PREPARSEDDATA,
+        Some(buf.as_mut_ptr() as *mut std::ffi::c_void),
+        &mut data_size,
+    );
+    if read == u32::MAX {
+        return None;
+    }
+    Some(buf)
+}
+
+unsafe fn input_value_caps(
+    preparsed: PHIDP_PREPARSED_DATA,
+    caps: &HIDP_CAPS,
+) -> Vec<HIDP_VALUE_CAPS> {
+    let mut num_value_caps = caps.NumberInputValueCaps;
+    let mut value_caps = vec![HIDP_VALUE_CAPS::default(); num_value_caps as usize];
+    if num_value_caps > 0 {
+        let _ = HidP_GetValueCaps(
+            HidP_Input,
+            value_caps.as_mut_ptr(),
+            &mut num_value_caps,
+            preparsed,
+        );
+        value_caps.truncate(num_value_caps as usize);
+    }
+    value_caps
+}
+
+/// Handles of every HID device RawInput knows.
+unsafe fn rawinput_device_handles() -> Vec<HANDLE> {
+    let entry_size = std::mem::size_of::<RAWINPUTDEVICELIST>() as u32;
+    let mut count = 0u32;
+    if GetRawInputDeviceList(None, &mut count, entry_size) == u32::MAX || count == 0 {
+        return Vec::new();
+    }
+
+    let mut list = vec![RAWINPUTDEVICELIST::default(); count as usize];
+    let written = GetRawInputDeviceList(Some(list.as_mut_ptr()), &mut count, entry_size);
+    if written == u32::MAX {
+        return Vec::new();
+    }
+    list.truncate(written as usize);
+
+    list.iter()
+        .filter(|e| e.dwType == RIM_TYPEHID)
+        .map(|e| e.hDevice)
+        .collect()
+}
+
+/// The touchpad's X and Y axes as its Touch Pad collection declares them:
+/// logical range, physical range and size. Windows exposes no report
+/// descriptor, but RawInput's preparsed data carries the same value caps,
+/// and it can be read while the collection itself is held open by the
+/// system's own touchpad stack. Without these the touch view would start
+/// from a default landscape extent and only grow with touches, drawing a
+/// portrait pad too wide.
+pub fn read_axis_info(device_path: &Path) -> Option<TouchpadPhysicalSize> {
+    let wanted = normalize_device_path(&device_path.to_string_lossy());
+    unsafe {
+        let handle = rawinput_device_handles().into_iter().find(|h| {
+            raw_input_device_name(*h).is_some_and(|n| normalize_device_path(&n) == wanted)
+        })?;
+        let buf = preparsed_data(handle)?;
+        let preparsed = PHIDP_PREPARSED_DATA(buf.as_ptr() as isize);
+        let mut caps = HIDP_CAPS::default();
+        if HidP_GetCaps(preparsed, &mut caps) != HIDP_STATUS_SUCCESS {
+            return None;
+        }
+        let value_caps = input_value_caps(preparsed, &caps);
+        // The first X/Y with a length unit, like `touchpad_physical_size`.
+        let axis = |usage: u16| {
+            value_caps
+                .iter()
+                .filter(|vc| vc.UsagePage == 0x01 && vc.Anonymous.NotRange.Usage == usage)
+                .find_map(|vc| axis_physical_info(&value_cap_field(vc)))
+        };
+        Some(TouchpadPhysicalSize {
+            x: axis(0x30)?,
+            y: axis(0x31)?,
+        })
+    }
+}
+
+/// The descriptor field a value cap describes, as far as axis geometry goes.
+unsafe fn value_cap_field(vc: &HIDP_VALUE_CAPS) -> ReportField {
+    ReportField {
+        kind: ReportKind::Input,
+        report_id: vc.ReportID,
+        usage_page: vc.UsagePage,
+        usage: vc.Anonymous.NotRange.Usage,
+        collection: None,
+        bit_offset: 0,
+        bit_size: vc.BitSize as usize,
+        constant: false,
+        variable: true,
+        logical_min: vc.LogicalMin,
+        logical_max: vc.LogicalMax,
+        physical_min: vc.PhysicalMin,
+        physical_max: vc.PhysicalMax,
+        unit: vc.Units,
+        unit_exponent: vc.UnitsExp as i32,
+    }
 }
 
 unsafe fn parse_touchpad_report(cache: &PreparsedCache, report: &[u8]) -> Option<TouchState> {
@@ -638,22 +730,34 @@ mod tests {
     }
 
     unsafe fn rawinput_device_names() -> Vec<String> {
-        let entry_size = std::mem::size_of::<RAWINPUTDEVICELIST>() as u32;
-        let mut count = 0u32;
-        if GetRawInputDeviceList(None, &mut count, entry_size) == u32::MAX || count == 0 {
-            return Vec::new();
-        }
-
-        let mut list = vec![RAWINPUTDEVICELIST::default(); count as usize];
-        let written = GetRawInputDeviceList(Some(list.as_mut_ptr()), &mut count, entry_size);
-        if written == u32::MAX {
-            return Vec::new();
-        }
-        list.truncate(written as usize);
-
-        list.iter()
-            .filter(|e| e.dwType == RIM_TYPEHID)
-            .filter_map(|e| raw_input_device_name(e.hDevice))
+        rawinput_device_handles()
+            .into_iter()
+            .filter_map(|h| raw_input_device_name(h))
             .collect()
+    }
+
+    /// Every discovered touchpad declares X and Y with a length unit, and
+    /// the ranges are sane: positive, and the logical range not smaller
+    /// than the physical one in units (at least one unit per 0.01 mm).
+    ///
+    /// Needs real hardware; skipped when no touchpad is attached (CI).
+    #[test]
+    fn axis_info_comes_from_the_touch_pad_collection() {
+        let Ok(devices) = WindowsDiscovery::find_touchpads() else {
+            eprintln!("no touchpad attached, skipping");
+            return;
+        };
+        for d in &devices {
+            let axes = read_axis_info(&d.devnode).unwrap_or_else(|| {
+                panic!(
+                    "{}: no X/Y value caps with a length unit",
+                    d.devnode.display()
+                )
+            });
+            for a in [&axes.x, &axes.y] {
+                assert!(a.logical_max > a.logical_min, "{:?}", a);
+                assert!(a.size_mm > 0.0 && a.resolution > 0.0, "{:?}", a);
+            }
+        }
     }
 }

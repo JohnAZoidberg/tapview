@@ -138,7 +138,8 @@ pub fn value_range(f: &ReportField) -> ValueRange {
     }
 }
 
-fn axis_info(f: &ReportField) -> Option<AxisPhysicalInfo> {
+/// An axis field's logical and physical range, if it carries a length unit.
+pub fn axis_physical_info(f: &ReportField) -> Option<AxisPhysicalInfo> {
     let size_mm = physical_range_mm(f)?;
     let logical_range = (f.logical_max - f.logical_min) as f64;
     let resolution = if size_mm > 0.0 {
@@ -169,7 +170,7 @@ pub fn touchpad_physical_size(layout: &ReportLayout) -> Option<TouchpadPhysicalS
                     && f.usage_page == GENERIC_DESKTOP_PAGE
                     && f.usage == usage
             })
-            .find_map(axis_info)
+            .find_map(axis_physical_info)
     };
     Some(TouchpadPhysicalSize {
         x: axis(USAGE_X)?,
