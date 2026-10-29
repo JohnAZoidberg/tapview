@@ -23,22 +23,27 @@ use crate::ptp::MT_TOOL_PALM;
 /// contains all active contacts atomically.
 pub struct WindowsBackend {
     touch_rx: mpsc::Receiver<TouchState>,
+    /// The RawInput thread's id, to end its message loop on drop; `None` if
+    /// the thread failed before it had a message queue.
+    thread_id: Option<u32>,
     _thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl InputBackend for WindowsBackend {
     fn open(device_path: &Path) -> Result<Self, InputError> {
         let (tx, rx) = mpsc::channel();
+        let (id_tx, id_rx) = mpsc::channel();
         let wanted = normalize_device_path(&device_path.to_string_lossy());
 
         let thread = std::thread::spawn(move || {
-            if let Err(e) = run_rawinput_loop(tx, wanted) {
+            if let Err(e) = run_rawinput_loop(tx, wanted, id_tx) {
                 log::error!("RawInput thread error: {}", e);
             }
         });
 
         Ok(Self {
             touch_rx: rx,
+            thread_id: id_rx.recv().ok(),
             _thread: Some(thread),
         })
     }
@@ -63,9 +68,22 @@ impl InputBackend for WindowsBackend {
     }
 }
 
+impl Drop for WindowsBackend {
+    fn drop(&mut self) {
+        // Nothing else ends the message loop: once the next backend registers
+        // for touchpad input (switching pads), this window gets no messages.
+        if let Some(id) = self.thread_id {
+            unsafe {
+                let _ = PostThreadMessageW(id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+}
+
 fn run_rawinput_loop(
     tx: mpsc::Sender<TouchState>,
     wanted_device: String,
+    id_tx: mpsc::Sender<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let hinstance = GetModuleHandleW(PCWSTR::null())?;
@@ -96,6 +114,9 @@ fn run_rawinput_loop(
             Some(hinstance.into()),
             None,
         )?;
+        // Creating the window gave the thread its message queue, so a
+        // WM_QUIT posted from here on is not lost.
+        let _ = id_tx.send(windows::Win32::System::Threading::GetCurrentThreadId());
 
         // RawInput registration is by HID usage, not by device, so every
         // attached touchpad's reports arrive at this window. Remember which one
