@@ -123,8 +123,15 @@ impl TapviewApp {
     }
 
     pub fn with_libinput(mut self, rx: Option<mpsc::Receiver<LibinputEvent>>) -> Self {
-        self.libinput_rx = rx;
+        self.set_libinput(rx);
         self
+    }
+
+    /// Replace the pointer panel's event source (`None` hides the panel), for
+    /// a libinput context that belongs to one device and goes with it.
+    pub fn set_libinput(&mut self, rx: Option<mpsc::Receiver<LibinputEvent>>) {
+        self.libinput_rx = rx;
+        self.libinput = LibinputState::default();
     }
 
     pub fn with_no_session_ui(mut self, ui: NoSessionUi) -> Self {
