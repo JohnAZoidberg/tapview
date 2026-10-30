@@ -2,7 +2,7 @@
 
 A touchpad visualizer. Shows multitouch contact points in real time, the raw capacitive heatmap of PixArt pads, and the Precision Touchpad (PTP) configuration the firmware exposes. Useful for debugging touchpad behavior, testing palm rejection, and understanding how your touchpad reports touches.
 
-It runs natively on Linux (the primary platform) and Windows, as an [Android app](#on-android) for phones with USB host support, and [in the browser](#in-the-browser) through WebHID.
+It runs natively on Linux (the primary platform), Windows and [macOS](#on-macos), as an [Android app](#on-android) for phones with USB host support, and [in the browser](#in-the-browser) through WebHID.
 
 ## Tested on
 
@@ -228,6 +228,17 @@ The same binary runs on Windows. Touches come from the pad's Precision Touchpad 
 
 Windows builds are cross-compiled from Linux with Nix (see below); there is no Windows CI artifact yet.
 
+## On macOS
+
+The same binary builds natively with `cargo build --release` or `nix build`; it needs no libraries beyond the system frameworks. Tapview reads two kinds of pad:
+
+- **PTP touchpads** (USB, Bluetooth): every HID device whose Touch Pad collection carries PTP finger fields, read through IOHIDManager. The pad's raw report descriptor drives the same PTP parser, heatmap loop and configuration backend as on Android and in the browser.
+- **Apple trackpads** (built-in, Magic Trackpad): these are not PTP devices. Their touches come in an undocumented vendor report, so tapview takes finished contacts from Apple's private MultitouchSupport framework instead. There is no heatmap and no PTP configuration for them.
+
+Devices are opened shared, so the cursor keeps working and grabbing is not available. The interpreted-input panel is not implemented on macOS.
+
+macOS lets a process open a pointing device only with Input Monitoring permission, and a CLI inherits it from the terminal that starts it. On the first open tapview asks for it, which adds the terminal to System Settings > Privacy & Security > Input Monitoring; enable it there and restart the terminal. If the terminal was denied earlier, macOS does not ask again: reset it with `tccutil reset ListenEvent <bundle id of the terminal>` and run tapview again.
+
 ## On Android
 
 Tapview also builds as an Android app for phones and tablets with a USB-C
@@ -317,13 +328,17 @@ src/
     evdev_backend.rs         Linux evdev implementation
     hidraw_backend.rs        Linux hidraw + PTP parser (--hidraw), for checking the parser
     windows_backend.rs       Windows Raw Input implementation
+    macos_backend.rs         macOS IOHIDDevice input reports + PTP parser
+    macos_mt.rs              macOS Apple trackpads through MultitouchSupport
   discovery/
     mod.rs                   DeviceDiscovery trait, device table
     udev_discovery.rs        Linux udev implementation
+    macos_discovery.rs       macOS: MultitouchSupport pads, then HID PTP pads
     windows_discovery.rs     Windows SetupAPI/HID implementation
   hid/
     mod.rs, descriptor.rs    HID report-descriptor model shared by every transport
     linux.rs                 Descriptor from sysfs next to the hidraw node
+    macos.rs                 macOS HID transport and PTP pad listing through IOHIDManager (hidapi)
   heatmap/
     mod.rs                   HidDevice trait (feature-report I/O), frame type
     chips.rs, protocol.rs    PixArt chip detection, register and burst-read protocol
@@ -334,8 +349,8 @@ src/
     hidraw.rs, windows_hid.rs  Native HidDevice implementations
   config/
     mod.rs                   PTP configuration model, UI handle and worker protocol
-    layout_backend.rs        Descriptor-driven backend (Linux, Android, browser)
-    linux.rs, windows.rs     Platform glue (Windows uses HidP instead of the descriptor model)
+    layout_backend.rs        Descriptor-driven backend (Linux, macOS, Android, browser)
+    linux.rs, macos.rs, windows.rs  Platform glue (Windows uses HidP instead of the descriptor model)
   web.rs, web_hid.rs         Browser front end and WebHID transport
   android.rs, android_hid.rs Android front end and JNI bridge to the Kotlin USB code
 android/                     Gradle project, Kotlin USB bridge, tapview-android cdylib crate

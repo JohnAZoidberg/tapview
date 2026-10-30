@@ -10,7 +10,7 @@ pub mod rates;
 pub mod windows_hid;
 
 use std::io;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 use std::path::Path;
 
 /// A single frame of raw capacitive heatmap data.
@@ -47,10 +47,12 @@ pub trait HidDevice {
 pub type PlatformHidDevice = hidraw::HidrawDevice;
 #[cfg(target_os = "windows")]
 pub type PlatformHidDevice = windows_hid::WinHidDevice;
+#[cfg(target_os = "macos")]
+pub type PlatformHidDevice = crate::hid::macos::MacHidDevice;
 
 /// Open the platform's HID device at `path` (a `/dev/hidraw*` node on
-/// Linux, a HID device interface path on Windows).
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+/// Linux, a HID device interface path on Windows, an IORegistry ID on macOS).
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn open_platform_hid_device(path: &Path) -> io::Result<PlatformHidDevice> {
     PlatformHidDevice::open(path)
 }

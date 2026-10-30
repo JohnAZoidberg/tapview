@@ -56,22 +56,22 @@ pub struct UdevDiscovery;
 
 impl DeviceDiscovery for UdevDiscovery {
     fn find_touchpads() -> Result<Vec<DeviceInfo>, DiscoveryError> {
-        let mut enumerator =
-            udev::Enumerator::new().map_err(|e| DiscoveryError::UdevError(e.to_string()))?;
+        let mut enumerator = udev::Enumerator::new()
+            .map_err(|e| DiscoveryError::Platform(format!("udev: {}", e)))?;
 
         enumerator
             .match_subsystem("input")
-            .map_err(|e| DiscoveryError::UdevError(e.to_string()))?;
+            .map_err(|e| DiscoveryError::Platform(format!("udev: {}", e)))?;
 
         enumerator
             .match_property("ID_INPUT_TOUCHPAD", "1")
-            .map_err(|e| DiscoveryError::UdevError(e.to_string()))?;
+            .map_err(|e| DiscoveryError::Platform(format!("udev: {}", e)))?;
 
         let mut results = Vec::new();
 
         for device in enumerator
             .scan_devices()
-            .map_err(|e| DiscoveryError::UdevError(e.to_string()))?
+            .map_err(|e| DiscoveryError::Platform(format!("udev: {}", e)))?
         {
             let syspath = device.syspath().to_string_lossy().to_string();
             if !syspath.contains("/event") {

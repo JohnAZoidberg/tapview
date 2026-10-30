@@ -144,7 +144,7 @@ impl Drop for HeatmapStream {
 
 /// Spawn a background thread that continuously reads raw capacitive frames
 /// from the platform HID device at `hidraw_path` and sends them over a channel.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn spawn_heatmap_thread(
     hidraw_path: &std::path::Path,
     burst_len: usize,

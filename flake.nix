@@ -65,12 +65,18 @@
             makeWrapper
           ];
 
-          buildInputs = with pkgs; [
-            systemd
-            libinput
-          ] ++ runtimeLibs;
+          # macOS links only system frameworks (IOKit through hidapi, and
+          # AppKit/OpenGL through winit and glutin).
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+            with pkgs;
+            [
+              systemd
+              libinput
+            ]
+            ++ runtimeLibs
+          );
 
-          postInstall = ''
+          postInstall = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             wrapProgram $out/bin/tapview \
               --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath runtimeLibs}
           '';

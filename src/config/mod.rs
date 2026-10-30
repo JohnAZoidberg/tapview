@@ -12,6 +12,8 @@
 pub mod layout_backend;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -104,6 +106,9 @@ pub type PlatformConfigBackend =
     layout_backend::LayoutConfigBackend<crate::heatmap::hidraw::HidrawDevice>;
 #[cfg(target_os = "windows")]
 pub type PlatformConfigBackend = windows::WindowsConfigBackend;
+#[cfg(target_os = "macos")]
+pub type PlatformConfigBackend =
+    layout_backend::LayoutConfigBackend<crate::hid::macos::MacHidDevice>;
 
 /// What the descriptor says about the device: which features exist, their
 /// ranges, and the pad's physical size. Known before any device I/O.
@@ -144,7 +149,7 @@ impl ConfigState {
 
 /// A device found by [`discover`]: its description plus an opened backend
 /// that has not been touched yet.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub struct Discovered {
     pub description: ConfigDescription,
     pub backend: PlatformConfigBackend,
@@ -152,7 +157,7 @@ pub struct Discovered {
 
 /// Find the PTP configuration interface belonging to a touchpad and open it.
 /// Does no reads or writes; follow with [`initialize`].
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub fn discover(device_path: &std::path::Path) -> Option<Discovered> {
     #[cfg(target_os = "linux")]
     {
@@ -161,6 +166,10 @@ pub fn discover(device_path: &std::path::Path) -> Option<Discovered> {
     #[cfg(target_os = "windows")]
     {
         windows::discover(device_path)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::discover(device_path)
     }
 }
 
