@@ -22,29 +22,112 @@ use crate::ptp::MT_TOOL_PALM;
 /// Windows delivers complete HID reports via WM_INPUT messages. Each report
 /// contains all active contacts atomically.
 pub struct WindowsBackend {
-    touch_rx: mpsc::Receiver<TouchState>,
+    reader: RawInputReader,
+}
+
+/// The RawInput thread and the frames it sends, tagged with the device
+/// handle they came from.
+struct RawInputReader {
+    touch_rx: mpsc::Receiver<(usize, TouchState)>,
     /// The RawInput thread's id, to end its message loop on drop; `None` if
     /// the thread failed before it had a message queue.
     thread_id: Option<u32>,
     _thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl InputBackend for WindowsBackend {
-    fn open(device_path: &Path) -> Result<Self, InputError> {
+impl RawInputReader {
+    /// `wanted`: the normalized interface path of the one pad to keep, or
+    /// `None` for every touchpad.
+    fn spawn(wanted: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel();
         let (id_tx, id_rx) = mpsc::channel();
-        let wanted = normalize_device_path(&device_path.to_string_lossy());
-
         let thread = std::thread::spawn(move || {
             if let Err(e) = run_rawinput_loop(tx, wanted, id_tx) {
                 log::error!("RawInput thread error: {}", e);
             }
         });
-
-        Ok(Self {
+        Self {
             touch_rx: rx,
             thread_id: id_rx.recv().ok(),
             _thread: Some(thread),
+        }
+    }
+
+    fn wait(
+        &self,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Option<(usize, TouchState)>, InputError> {
+        let r = match timeout {
+            None => self.touch_rx.try_recv().map_err(|e| match e {
+                mpsc::TryRecvError::Empty => None,
+                mpsc::TryRecvError::Disconnected => Some(()),
+            }),
+            Some(t) => self.touch_rx.recv_timeout(t).map_err(|e| match e {
+                mpsc::RecvTimeoutError::Timeout => None,
+                mpsc::RecvTimeoutError::Disconnected => Some(()),
+            }),
+        };
+        match r {
+            Ok(frame) => Ok(Some(frame)),
+            Err(None) => Ok(None),
+            Err(Some(())) => Err(InputError::ReadError("RawInput thread died".to_string())),
+        }
+    }
+}
+
+impl Drop for RawInputReader {
+    fn drop(&mut self) {
+        // Nothing else ends the message loop: once the next backend registers
+        // for touchpad input (switching pads), this window gets no messages.
+        if let Some(id) = self.thread_id {
+            unsafe {
+                let _ = PostThreadMessageW(id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+}
+
+/// Every attached touchpad at once, including ones plugged in later:
+/// RawInput registers by usage, per process, so a second [`WindowsBackend`]
+/// would take the reports away from the first. For `--log-touches`.
+pub struct AllTouchpads {
+    reader: RawInputReader,
+    names: HashMap<usize, String>,
+}
+
+impl AllTouchpads {
+    pub fn open() -> Self {
+        Self {
+            reader: RawInputReader::spawn(None),
+            names: HashMap::new(),
+        }
+    }
+
+    /// The next frame within `timeout`, with the normalized interface path
+    /// of the pad it came from (compare with [`normalize_device_path`] of a
+    /// discovered device's `devnode`).
+    pub fn wait_events(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<(String, TouchState)>, InputError> {
+        let Some((handle, state)) = self.reader.wait(Some(timeout))? else {
+            return Ok(None);
+        };
+        let name = self.names.entry(handle).or_insert_with(|| {
+            // SAFETY: a handle RawInput just delivered a report from.
+            unsafe { raw_input_device_name(HANDLE(handle as *mut std::ffi::c_void)) }
+                .map(|n| normalize_device_path(&n))
+                .unwrap_or_else(|| format!("handle {:#x}", handle))
+        });
+        Ok(Some((name.clone(), state)))
+    }
+}
+
+impl InputBackend for WindowsBackend {
+    fn open(device_path: &Path) -> Result<Self, InputError> {
+        let wanted = normalize_device_path(&device_path.to_string_lossy());
+        Ok(Self {
+            reader: RawInputReader::spawn(Some(wanted)),
         })
     }
 
@@ -58,31 +141,20 @@ impl InputBackend for WindowsBackend {
     }
 
     fn poll_events(&mut self) -> Result<Option<TouchState>, InputError> {
-        match self.touch_rx.try_recv() {
-            Ok(state) => Ok(Some(state)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err(InputError::ReadError("RawInput thread died".to_string()))
-            }
-        }
+        Ok(self.reader.wait(None)?.map(|(_, state)| state))
     }
-}
 
-impl Drop for WindowsBackend {
-    fn drop(&mut self) {
-        // Nothing else ends the message loop: once the next backend registers
-        // for touchpad input (switching pads), this window gets no messages.
-        if let Some(id) = self.thread_id {
-            unsafe {
-                let _ = PostThreadMessageW(id, WM_QUIT, WPARAM(0), LPARAM(0));
-            }
-        }
+    fn wait_events(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<TouchState>, InputError> {
+        Ok(self.reader.wait(Some(timeout))?.map(|(_, state)| state))
     }
 }
 
 fn run_rawinput_loop(
-    tx: mpsc::Sender<TouchState>,
-    wanted_device: String,
+    tx: mpsc::Sender<(usize, TouchState)>,
+    wanted_device: Option<String>,
     id_tx: mpsc::Sender<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
@@ -121,7 +193,7 @@ fn run_rawinput_loop(
         // RawInput registration is by HID usage, not by device, so every
         // attached touchpad's reports arrive at this window. Remember which one
         // the user picked so the rest get dropped.
-        WANTED_DEVICE.with(|w| *w.borrow_mut() = Some(wanted_device));
+        WANTED_DEVICE.with(|w| *w.borrow_mut() = wanted_device);
 
         // Register for raw touchpad input
         let rid = RAWINPUTDEVICE {
@@ -149,8 +221,9 @@ fn run_rawinput_loop(
 }
 
 thread_local! {
-    static TX: std::cell::Cell<Option<mpsc::Sender<TouchState>>> = const { std::cell::Cell::new(None) };
-    /// Normalized interface path of the touchpad the user selected.
+    static TX: std::cell::Cell<Option<mpsc::Sender<(usize, TouchState)>>> = const { std::cell::Cell::new(None) };
+    /// Normalized interface path of the touchpad the user selected, or
+    /// `None` for every touchpad (`--log-touches`).
     static WANTED_DEVICE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     /// Per-device-handle verdict from `WANTED_DEVICE`, to keep the string
     /// comparison off the per-report path.
@@ -244,7 +317,7 @@ unsafe fn handle_raw_input(hrawinput: HRAWINPUT) {
                 TX.with(|cell| {
                     let tx = cell.take();
                     if let Some(ref sender) = tx {
-                        let _ = sender.send(state);
+                        let _ = sender.send((device_handle.0 as usize, state));
                     }
                     cell.set(tx);
                 });
@@ -308,7 +381,7 @@ unsafe fn raw_input_device_name(device_handle: HANDLE) -> Option<String> {
 
 /// Normalize a HID interface path for comparison: SetupAPI and RawInput report
 /// the same device with different casing (`\\?\hid#...` vs `\\?\HID#...`).
-fn normalize_device_path(path: &str) -> String {
+pub fn normalize_device_path(path: &str) -> String {
     path.strip_prefix(r"\\?\")
         .unwrap_or(path)
         .to_ascii_lowercase()

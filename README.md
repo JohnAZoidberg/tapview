@@ -30,6 +30,7 @@ Touchpads attached over Bluetooth work on Linux and Windows through the normal H
 - Renders the raw capacitive heatmap of PixArt touchpad controllers (see below)
 - Reads and writes the pad's PTP configuration: input mode, surface and button switches, latency mode, click force and haptic intensity (see below)
 - Records a touch session to a file and plays it back, with no device needed
+- Logs touch activity on every touchpad in the background, one CSV row per touch: when, how long, how many fingers (see [Logging touch activity](docs/touch-log.md))
 
 ### Heatmap
 
@@ -150,6 +151,7 @@ sudo ./target/release/tapview [OPTIONS]
 | `--set-haptic-intensity <N>` | Set the haptic intensity (0, 25, 50, 75 or 100; the firmware has five levels) and exit |
 | `--set-click-force <N>` | Set the click-force / button-press threshold level (typically 1 = light to 3 = firm) and exit |
 | `--record <path>` | Record touch session to a binary file |
+| `--log-touches <path>` | Run without a window and append one CSV row per touch (pad, start, length, fingers, clicks), plus system sleeps, until killed. Follows every touchpad, also ones attached later, or only `--device`. See [docs/touch-log.md](docs/touch-log.md) |
 | `--play <path>` | Play back a recorded touch session (no device needed) |
 | `--hidraw` | Linux: read touches from the hidraw node through tapview's own PTP report parser instead of evdev (same `hidraw` access as the heatmap; no grab). For checking the parser against the kernel |
 | `--dump-hidraw <N>` | Linux: print the HID report descriptor and N raw input reports as hex, then exit |
@@ -191,6 +193,9 @@ sudo ./target/release/tapview --record /tmp/session.tapv
 
 # Play it back (no device/sudo needed)
 ./target/release/tapview --play /tmp/session.tapv
+
+# Log when and how long every touchpad is touched, until killed
+./target/release/tapview --log-touches ~/touches.csv
 
 # Pick a touchpad when several are attached
 sudo ./target/release/tapview --list
@@ -312,6 +317,7 @@ src/
   main.rs                    Entry shim: cli::main natively, web::start on wasm32
   lib.rs                     Module tree shared by every front end
   cli.rs                     Native CLI: arguments, device selection, --info/--set-*, thread setup
+  cli/touchlog.rs            --log-touches: headless per-touch CSV log of every pad, with hotplug
   app.rs                     eframe::App impl, rendering loop, history buffer, connect screen
   session.rs                 An open touchpad bundled with its heatmap and config handles
   multitouch.rs              MT Protocol B state machine (platform-independent)
