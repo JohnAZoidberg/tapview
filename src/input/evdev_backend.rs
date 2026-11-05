@@ -110,4 +110,31 @@ impl InputBackend for EvdevBackend {
             Err(e) => Err(InputError::ReadError(e.to_string())),
         }
     }
+
+    /// Sleeps in poll(2) on the device until events arrive.
+    fn wait_events(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<TouchState>, InputError> {
+        if self.pending.is_empty() {
+            let mut pfd = libc::pollfd {
+                fd: self.device.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
+            // SAFETY: one valid pollfd for the duration of the call.
+            let r = unsafe { libc::poll(&mut pfd, 1, ms) };
+            if r < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(InputError::ReadError(e.to_string()));
+                }
+            }
+            if r <= 0 {
+                return Ok(None);
+            }
+        }
+        self.poll_events()
+    }
 }

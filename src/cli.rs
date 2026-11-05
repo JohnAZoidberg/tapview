@@ -38,6 +38,7 @@ use std::thread;
 use std::time::Duration;
 
 mod picker;
+mod touchlog;
 
 #[derive(Parser)]
 #[command(name = "tapview", about = "Touchpad Visualizer")]
@@ -147,6 +148,13 @@ struct Cli {
     #[arg(long, value_name = "WAKE", conflicts_with = "play")]
     sleep_wake: Option<SleepWakeArg>,
 
+    /// Run without a window and append one CSV row per touch (pad, start,
+    /// length, fingers, clicks) plus system sleeps to FILE, until killed.
+    /// Follows every touchpad, also ones attached later, or only --device.
+    /// For measuring real usage, see docs/touch-log.md
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["play", "record"])]
+    log_touches: Option<String>,
+
     /// Play back a recorded touch session (no device needed)
     #[arg(long, conflicts_with_all = ["record", "device", "libinput", "heatmap", "config"])]
     play: Option<String>,
@@ -203,6 +211,23 @@ pub fn main() {
 
     if cli.list {
         print!("{}", discovery::format_device_table(&devices, cli.verbose));
+        std::process::exit(0);
+    }
+
+    // --log-touches follows every pad, also ones attached later, unless
+    // --device picks one.
+    if let Some(ref path) = cli.log_touches {
+        let only = cli.device.as_ref().map(|wanted| {
+            discovery::find_device(&devices, wanted).cloned().unwrap_or_else(|| {
+                log::error!("Device {} not found among detected touchpads. Use --list to see available devices.", wanted);
+                std::process::exit(1);
+            })
+        });
+        let find = || find_touchpads().unwrap_or_default();
+        if let Err(e) = touchlog::run(only, path, find) {
+            log::error!("log-touches: {}", e);
+            std::process::exit(1);
+        }
         std::process::exit(0);
     }
 

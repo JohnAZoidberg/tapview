@@ -141,6 +141,9 @@ impl MTStateMachine {
                         if value < 0 {
                             self.touches[slot].used = false;
                         } else {
+                            // A new contact. It may bring no position: the
+                            // kernel drops X/Y equal to the slot's last ones.
+                            self.touches[slot].set_used();
                             self.touches[slot].tracking_id = value;
                         }
                     }

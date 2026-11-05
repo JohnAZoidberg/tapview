@@ -76,4 +76,23 @@ pub trait InputBackend: Send + 'static {
     fn grab(&mut self) -> Result<(), InputError>;
     fn ungrab(&mut self) -> Result<(), InputError>;
     fn poll_events(&mut self) -> Result<Option<TouchState>, InputError>;
+
+    /// Like [`poll_events`](Self::poll_events), but waits up to `timeout`
+    /// for a frame. For callers that would otherwise spin on an idle pad
+    /// (`--log-touches` runs for days); backends that can block override it.
+    fn wait_events(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<TouchState>, InputError> {
+        let end = Instant::now() + timeout;
+        loop {
+            if let Some(state) = self.poll_events()? {
+                return Ok(Some(state));
+            }
+            if Instant::now() >= end {
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
